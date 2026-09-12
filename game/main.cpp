@@ -922,7 +922,20 @@ InputState walkInputAt(const std::vector<WalkStep>& steps, int frame) {
 // 看着某个东西按 E：执行它自己带的命令，并且走控制台那条路。
 // 「实体 → 命令 → 控制台」这条链让交互、打字、--cmd 共用同一个解释器：
 // 关卡作者只要给实体写一句 command，不用碰 C++。
-void interact(Scene& s, Console& con, Toast& toast, double now) {
+// 这个物体现在能不能按 E（见 Entity::forLevel）。
+bool interactableNow(const Entity& e, int levelIndex) {
+    return !e.command.empty() && (e.forLevel < 0 || e.forLevel == levelIndex);
+}
+
+// 准星旁边那行"按 E …"。用不上的东西**不提示** —— 提示了却不能按，
+// 比干脆不提示更让人困惑（"我按了怎么没反应"）。
+std::string promptFor(const World& w, int entity, int levelIndex) {
+    if (entity < 0) return std::string();
+    const Entity& e = w.entities[size_t(entity)];
+    return interactableNow(e, levelIndex) ? e.prompt : std::string();
+}
+
+void interact(Scene& s, Console& con, Toast& toast, double now, int levelIndex) {
     const World::RayHit hit = s.world.castRay(s.player.eye(), s.player.forward(), Player::kReach);
     if (hit.entity < 0) {
         toast.show("准星前面没有能互动的东西（走近点，或者低头看看）", now);
@@ -931,6 +944,17 @@ void interact(Scene& s, Console& con, Toast& toast, double now) {
     const Entity& e = s.world.entities[size_t(hit.entity)];
     if (e.command.empty()) {
         toast.show("「" + e.name + "」现在还没接上动作", now);
+        return;
+    }
+    // 不是这一关的东西：**不开控制台**，但要说清楚。
+    // 零基础的人进了游戏会把 E 按一圈 —— 第 0 关（一间黑屋子）按到材质球上，弹出一屏
+    // "roughness / metallic"，他不知道那是什么、也不知道跟自己该干的事有什么关系，
+    // 只会更懵。回一句"这是第 N 关的事"，他反而摸清了"这个世界是按关分的"。
+    if (e.forLevel >= 0 && e.forLevel != levelIndex) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "「%s」是第 %d 关的事，现在还用不上", e.name.c_str(),
+                      e.forLevel);
+        toast.show(buf, now, 2.5);
         return;
     }
     // 把控制台翻开：命令的来龙去脉（执行了哪一句、结果是什么）就在眼前，
@@ -1106,7 +1130,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
                       : ((con.visible() || menu.visible()) ? InputState{} : fromWindowInput(pi));
         updatePlayer(scene.player, in, scene.world, dt);
         syncCamera(scene);
-        if (in.interact) interact(scene, con, toast, now);
+        if (in.interact) interact(scene, con, toast, now, rt.index);
 
         // ---- 关卡判定：评委机位给世界拍一张 96x54 的小图，算进度。
         // 每帧都算：学生改了 content/ 按 R 之后，进度条当场就动 ——
@@ -1188,9 +1212,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         if (!menu.visible()) {
             const World::RayHit look =
                 scene.world.castRay(scene.player.eye(), scene.player.forward(), Player::kReach);
-            drawCrosshair(rz.framebuffer(), font,
-                          look.entity >= 0 ? scene.world.entities[size_t(look.entity)].prompt
-                                           : std::string(),
+            drawCrosshair(rz.framebuffer(), font, promptFor(scene.world, look.entity, rt.index),
                           toast.alive(now) ? toast.text : std::string());
         }
         if (con.visible()) con.draw(rz.framebuffer(), font);
@@ -2077,6 +2099,41 @@ void testLevel() {
         const float pFull = judge.evaluate(wFull0, levelAt(0)).progress;
         const float pRaw = judge.evaluate(wRaw, levelAt(0)).progress;
         check(pRaw <= pFull + 1e-4f, "关卡：删掉 content/ 不会让第 0 关更亮（数据不是它的开关）");
+    }
+
+    // ①c 交互按关卡隔离。零基础的人进了游戏会把 E 按一圈 —— 第 0 关（一间黑屋子）
+    //     按到材质球上会弹出一屏 "roughness / metallic"，他不知道那是什么、也不知道
+    //     跟自己该干的事有什么关系。所以每件东西标了"这是哪一关的事"，
+    //     不是这一关的不给开控制台（但会回一句"这是第 N 关的事"）。
+    {
+        World wg;
+        buildWorkshop(wg);
+        const Entity* lamp = wg.entity("吊灯");
+        const Entity* term = wg.entity("终端");
+        const Entity* board = wg.entity("展板");
+        const Entity* clay = wg.entity("陶土球");
+        check(lamp != nullptr && term != nullptr && board != nullptr && clay != nullptr,
+              "关卡：吊灯/终端/展板/陶土球这几个可交互的东西都在");
+        if (lamp != nullptr && term != nullptr && board != nullptr && clay != nullptr) {
+            check(interactableNow(*lamp, 1), "关卡：第 1 关能看吊灯铭牌（那一关就靠它）");
+            check(!interactableNow(*lamp, 0), "关卡：第 0 关看不了吊灯铭牌");
+            check(!interactableNow(*lamp, 2), "关卡：第 2 关也看不了吊灯铭牌");
+            check(interactableNow(*clay, 2), "关卡：材质球在第 2 关能按");
+            check(!interactableNow(*clay, 0), "关卡：材质球在第 0 关不能按");
+            check(interactableNow(*term, 0) && interactableNow(*term, 3),
+                  "关卡：终端哪一关都能用（它是每关的公告板）");
+            check(interactableNow(*board, 2), "关卡：展板哪一关都能看（它不是任何一关的作业）");
+
+            // 准星提示也要跟着：用不上的东西**不提示**"按 E" ——
+            // 提示了却不能按，比干脆不提示更让人困惑（"我按了怎么没反应"）。
+            int lampIdx = -1;
+            for (size_t i = 0; i < wg.entities.size(); ++i) {
+                if (wg.entities[i].name == "吊灯") lampIdx = int(i);
+            }
+            check(lampIdx >= 0, "关卡：能按名字找到吊灯");
+            check(!promptFor(wg, lampIdx, 1).empty(), "关卡：第 1 关准星提示「按 E 看吊灯铭牌」");
+            check(promptFor(wg, lampIdx, 0).empty(), "关卡：第 0 关准星不提示吊灯");
+        }
     }
 
     // ② 判分跟着世界走：同一场景，把灯打开，评委机位必须更亮、进度只能升不能降。
@@ -3080,7 +3137,7 @@ int main(int argc, char** argv) {
             const InputState in = walkInputAt(walk, f);
             updatePlayer(scene.player, in, scene.world, fixedDt);
             syncCamera(scene);
-            if (in.interact) interact(scene, con, toast, 0.0);
+            if (in.interact) interact(scene, con, toast, 0.0, rt.index);
 
             const auto t0 = std::chrono::steady_clock::now();
             rz.framebuffer().clear(kClearColor);

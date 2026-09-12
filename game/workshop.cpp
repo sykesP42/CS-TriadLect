@@ -186,6 +186,7 @@ Workshop buildWorkshop(World& w) {
     lamp.solid = false;
     lamp.prompt = "按 E 看吊灯铭牌";
     lamp.command = "look lamp";
+    lamp.forLevel = 1;  // 吊灯铭牌是第 1 关的事（那一关就是靠它把灯装回去的）
     ws.entLamp = w.addEntity(lamp);
 
     // 左墙展板
@@ -218,6 +219,7 @@ Workshop buildWorkshop(World& w) {
         Entity orb = makeEntity(orbName[i], mOrb, orbMat[i], Vec3{3.6f, 1.4f, pedZ[i]});
         orb.prompt = "按 E 观察材质";
         orb.command = std::string("inspect ") + orbName[i];
+        orb.forLevel = 2;  // 展台上这三个球是第 2 关（材质）的作业
         ws.entOrbs[i] = w.addEntity(orb);
 
         // 样板柱很细，不挡路（solid = false）；样板球挂在与球同高的位置
@@ -230,6 +232,7 @@ Workshop buildWorkshop(World& w) {
         ref.solid = false;
         ref.prompt = "按 E 读样板数值";
         ref.command = std::string("inspect ") + refName[i];
+        ref.forLevel = 2;  // 样板也是第 2 关的（看答案用的）
         ws.entRefOrbs[i] = w.addEntity(ref);
     }
 

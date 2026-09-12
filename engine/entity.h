@@ -33,6 +33,15 @@ struct Entity {
     // prompt 是准星旁的提示文字，留空表示不可交互。
     std::string prompt;
     std::string command;
+
+    // 这个交互是**哪一关的事**。-1 = 哪一关都能用（终端、展板）；
+    // 其它值 = 只在那一关可用（吊灯是第 1 关的，材质球是第 2 关的）。
+    //
+    // 为什么要这个：零基础的人进了游戏会把 E 按一圈。第 0 关（一间黑屋子）
+    // 按到材质球上、屏幕弹出一屏"roughness / metallic"，他不知道那是什么、
+    // 也不知道跟自己该干的事有什么关系 —— 只会更懵。
+    // 所以当前关用不上的，按 E **不开控制台**，只回一句"这是第 N 关的事"。
+    int forLevel = -1;
 };
 
 inline Mat4 entityTransform(const Entity& e) {
