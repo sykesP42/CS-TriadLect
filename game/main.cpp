@@ -43,8 +43,12 @@ const char* kAutopilotHint = "自动演示：--walk 正在接管输入（想自�
 
 struct Args {
     std::string shot = "build/out.png";  // 截图输出路径
-    int width = 480;
-    int height = 270;
+    // 离屏出图的默认分辨率。**不低于 480p** 是硬要求：出图既是验证素材，也是
+    // 文档/README 里给人看的图，480x270 那个老默认值太低（当年是为了逐像素比对
+    // 跑得快，可脚本一直都显式传尺寸，这个默认值根本没人靠它提速，倒是谁不带
+    // 尺寸跑一次 --shot 就拿到一张糊图）。854x480 也是 16:9。
+    int width = 854;
+    int height = 480;
     bool hasWidth = false;               // 显式给过 --width 就别再替它挑窗口尺寸
     bool hasHeight = false;
     int frames = 1;                      // 离屏模式下运行的帧数
@@ -84,8 +88,8 @@ void printUsage() {
         "\n"
         "用法: dreamlab [选项]\n"
         "  --shot <路径>      离屏截图输出路径（给了它就一定不开窗）\n"
-        "  --width <像素>     渲染宽度 / 窗口客户区宽度（离屏默认 480；开窗按核数自适应）\n"
-        "  --height <像素>    渲染高度 / 窗口客户区高度（离屏默认 270；开窗按核数自适应）\n"
+        "  --width <像素>     渲染宽度 / 窗口客户区宽度（离屏默认 854；开窗按核数自适应）\n"
+        "  --height <像素>    渲染高度 / 窗口客户区高度（离屏默认 480；开窗按核数自适应）\n"
         "  --scale <倍数>     按 1/N 分辨率渲染再放大铺满窗口（低配机器用 2 或 3）\n"
         "  --fpscap <帧率>    开窗锁帧（默认 60）；给 0 就不锁 —— 想看看自己机器能跑多快用它\n"
         "  --frames <帧数>    离屏：跑多少帧后出图；开窗：跑够多少帧自动退出（默认 1 / 一直跑）\n"
@@ -2289,6 +2293,17 @@ void testSave() {
 }
 
 int runSelfTest() {
+    // 命令行默认值也得钉：离屏出图的默认分辨率不许低于 480p（明确要求，见 Args 里
+    // width/height 那段注释）。这条挡的是"谁为了快又把它悄悄调回 480x270"。
+    {
+        char a0[] = "dreamlab";
+        char a1[] = "--shot";
+        char a2[] = "build/tmp_selftest_default.png";
+        char* av[] = {a0, a1, a2};
+        const Args def = parseArgs(3, av);
+        check(def.width >= 854 && def.height >= 480, "命令行：--shot 的默认分辨率不低于 480p（854x480）");
+    }
+
     testMath();
     testRasterizer();
     testFont();
