@@ -66,4 +66,8 @@ struct Player {
 // 走一步。dt 秒。返回这次有没有撞到东西（关卡/调试用）
 bool updatePlayer(Player& p, const InputState& in, const World& world, float dt);
 
+// 这个人站在当前位置合不合规（不跟任何实体打架）。存档回读、出生点校验用：
+// "存档里的位置被墙占了"必须能被发现，否则人会卡在实体里出不来。
+bool playerFits(const World& world, const Player& p);
+
 }  // namespace dlab

@@ -20,6 +20,7 @@
 #include "../engine/content.h"
 #include "../engine/mesh.h"
 #include "../engine/reload.h"
+#include "../engine/save.h"
 #include "../engine/world.h"
 #include "player.h"
 #include "workshop.h"
@@ -64,6 +65,7 @@ struct Args {
     int scale = 1;                       // --scale N：按 1/N 分辨率渲染，窗口放大显示
     int fpsCap = 60;                     // --fpscap N：开窗锁多少帧；0 = 不锁（测性能用）
     bool noclip = false;
+    bool reset = false;                  // --reset：删掉存档，从头开始
     bool help = false;
 };
 
@@ -90,6 +92,7 @@ void printUsage() {
         "                     键名 w a s d e，冒号后是帧数（60 帧 = 1 秒）。给了它就忽略键盘\n"
         "  --trace            每帧打印位置 / 朝向（开窗还带 work= 一帧干活的毫秒数、period= 帧间隔）\n"
         "  --noclip           穿墙（调试和拍图用）\n"
+        "  --reset            删掉存档，从出生点从头开始（存档在 saved/save.bin）\n"
         "  --preview [文本]   把中文字模画成终端 ASCII 图（检查字模是否完好）\n"
         "  --hud              在画面上叠一层文字（验证中文渲染进 PNG）\n"
         "  --watch <毫秒>     先应用 content/，再等文件变化并重新应用，然后才截图\n"
@@ -159,6 +162,8 @@ Args parseArgs(int argc, char** argv) {
             a.fpsCap = std::atoi(takeValue(argc, argv, i, "--fpscap"));
         } else if (s == "--noclip") {
             a.noclip = true;
+        } else if (s == "--reset") {
+            a.reset = true;
         } else if (s == "--selftest") {
             a.selftest = true;
         } else if (s == "-h" || s == "--help") {
@@ -1554,6 +1559,92 @@ void testConsole() {
     check(orphanPainted, "控制台：字模没加载时也画得出（红块占位），不是白屏也不是崩溃");
 }
 
+void testSave() {
+    // 存到 build/ 里，绝不碰玩家真正的 saved/save.bin —— 跑一次自检把人家进度清了
+    // 是最难被原谅的一种"测试"
+    const std::string path = "build/selftest_save.bin";
+    std::remove(path.c_str());
+
+    // ① 全新的存档点：文件不存在 = 没有存档，不是错误
+    check(!loadSave(path).loaded, "存档：文件不存在时安静地返回「没有存档」");
+
+    // ② 存一轮读一轮：每个字段都得原样回来（定长二进制不走文本，浮点也不该掉精度）
+    SaveData out;
+    out.level = 3;
+    out.feet = Vec3{1.5f, -0.25f, 7.25f};
+    out.yaw = 0.75f;
+    out.pitch = 1.0f;
+    out.goals = 0b1011u;
+    check(writeSave(out, path), "存档：写 build/selftest_save.bin 成功");
+    const SaveData in = loadSave(path);
+    check(in.loaded, "存档：刚写下的文件读得回来");
+    check(in.level == 3, "存档：关卡号原样回来");
+    check(sameVec3(in.feet, out.feet), "存档：脚底坐标原样回来");
+    check(in.yaw == out.yaw && in.pitch == out.pitch, "存档：朝向原样回来（浮点按位存，没掉精度）");
+    check(in.goals == out.goals, "存档：目标位掩码原样回来");
+
+    // ③ 各种坏档：全都当"没有存档"，一个都不许崩、不许把 NaN 放进世界
+    auto broken = [&](const char* what, const std::string& bytes) {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (f != nullptr) {
+            std::fwrite(bytes.data(), 1, bytes.size(), f);
+            std::fclose(f);
+        }
+        check(!loadSave(path).loaded, what);
+    };
+
+    std::string good;
+    good.append(kSaveMagic, 4);
+    detail::pushU32(good, kSaveVersion);
+    detail::pushU32(good, 0);
+    detail::pushF32(good, 0.0f);
+    detail::pushF32(good, 0.0f);
+    detail::pushF32(good, 4.5f);
+    detail::pushF32(good, 0.0f);
+    detail::pushF32(good, -0.06f);
+    detail::pushU32(good, 0);
+
+    broken("存档：magic 不对 = 没有存档", "XXXX" + good.substr(4));
+    broken("存档：版本号不认识 = 没有存档", good.substr(0, 4) + std::string("\x09\x00\x00\x00", 4) + good.substr(8));
+    broken("存档：少一个字节 = 没有存档", good.substr(0, good.size() - 1));
+
+    // 坐标是 NaN 的档：不拦住的话人会瞬移到 NaN，然后整个世界从屏幕上消失
+    std::string nanSave = good;
+    nanSave.replace(12, 4, [] {
+        std::string t;
+        detail::pushF32(t, std::nanf(""));
+        return t;
+    }());
+    broken("存档：脚底坐标是 NaN = 没有存档", nanSave);
+
+    // 关卡号超范围：将来关卡数据换了，旧档不该把人塞进一个不存在的关
+    std::string badLevel = good;
+    badLevel.replace(8, 4, [] {
+        std::string t;
+        detail::pushU32(t, 999u);
+        return t;
+    }());
+    broken("存档：关卡号超范围 = 没有存档", badLevel);
+
+    // ④ 只有俯仰角越界这一种"半坏"要救得回来：夹到 ±89°，而不是整档作废
+    std::string wildPitch = good;
+    wildPitch.replace(28, 4, [] {
+        std::string t;
+        detail::pushF32(t, 3.0f);
+        return t;
+    }());
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    std::fwrite(wildPitch.data(), 1, wildPitch.size(), f);
+    std::fclose(f);
+    const SaveData fixed = loadSave(path);
+    check(fixed.loaded, "存档：俯仰角越界仍然读得出来（只夹角度，不作废整档）");
+    checkClose(fixed.pitch, 1.5533f, 1e-4f, "存档：越界的俯仰角被夹到 ±89°");
+
+    // ⑤ --reset 的底座：删掉之后必须真的当没存档
+    check(clearSave(path), "存档：--reset 删档成功");
+    check(!loadSave(path).loaded, "存档：删档之后读出来是「没有存档」");
+}
+
 int runSelfTest() {
     testMath();
     testRasterizer();
@@ -1563,6 +1654,7 @@ int runSelfTest() {
     testRaycast();
     testContent();
     testConsole();
+    testSave();
     if (g_failures == 0) {
         std::printf("[selftest] %d 项检查全部通过\n", g_checks);
         return 0;
@@ -1598,6 +1690,43 @@ int main(int argc, char** argv) {
     ContentWatcher watcher(contentFileList());
     watcher.prime(scene.world);
 
+    // 控制台：面板本身完全不知道世界是什么，命令通过 handler 走出去（见 console.h 文件头的边界说明）。
+    // --cmd 注入走 con.run()，和真人敲回车是同一条路径 —— 离屏截图里能看到的，宣讲现场一定按得出来。
+    Console con;
+    con.setVisible(args.console);
+    con.print("数媒组工作室 · 控制台。敲 help 看全部命令，R 键重新读 content/。");
+    con.print("这个世界由 content/*.txt 决定：改文件 → 敲 reload → 画面当场变。");
+
+    // 存档：只有开窗模式（= 真的在玩）才读。离屏出图必须每次从同一个出生点开始，
+    // 不然"昨天的图和今天逐像素对不上"，而逐像素比对正是本项目的验证主手段。
+    const bool windowed = !args.hasShot;
+    if (args.reset) {
+        clearSave();
+        std::printf("[存档] 已清空 %s\n", kSavePath);
+    }
+    if (windowed && !args.reset) {
+        const SaveData sv = loadSave();
+        if (sv.loaded) {
+            // 出生点先留个底：存档里的位置要是站不住，得能退回这里
+            const Player spawn = scene.player;
+            scene.player.feet = sv.feet;
+            scene.player.yaw = sv.yaw;
+            scene.player.pitch = sv.pitch;
+            // 读到的是"上次离开的地方"，但世界可能已经变了（改了 content/ 的家具位置，
+            // 存档点就可能在墙里）。站不住就老老实实回出生点 —— 卡在实体里出不来
+            // 是最让人以为"游戏坏了"的一种坏法。
+            if (!playerFits(scene.world, scene.player)) {
+                scene.player = spawn;
+                std::printf("[存档] 存档里的位置已经被东西占了 → 回出生点（想彻底重来用 --reset）\n");
+                con.print("上次离开的位置现在被东西占了，先回出生点。想彻底重来：加 --reset 启动。");
+            } else {
+                std::printf("[存档] 继续上次：站在 (%.2f, %.2f, %.2f)（想从头开始用 --reset）\n",
+                            double(sv.feet.x), double(sv.feet.y), double(sv.feet.z));
+                con.print("继续上次的位置。想从出生点重来：加 --reset 启动。");
+            }
+        }
+    }
+
     // --watch：没有窗口也能验证热重载。先应用一次 content，然后最多等 N 毫秒，
     // 等到文件内容变化就重新应用，再走正常渲染出图 —— 和游戏里按 R 是同一条代码路径。
     if (args.watchMs > 0) {
@@ -1616,18 +1745,10 @@ int main(int argc, char** argv) {
 
     // --scale 只在开窗时有意义：离屏出图的像素数必须严格等于 --width/--height
     // （截图比对脚本都指着这个），所以渲染分辨率按模式定下来，不再变。
-    const bool windowed = !args.hasShot;
     const int renderW = windowed ? args.width / args.scale : args.width;
     const int renderH = windowed ? args.height / args.scale : args.height;
     Rasterizer rz(args.threads);
     rz.resize(renderW, renderH);
-
-    // 控制台：面板本身完全不知道世界是什么，命令通过 handler 走出去（见 console.h 文件头的边界说明）。
-    // --cmd 注入走 con.run()，和真人敲回车是同一条路径 —— 离屏截图里能看到的，宣讲现场一定按得出来。
-    Console con;
-    con.setVisible(args.console);
-    con.print("数媒组工作室 · 控制台。敲 help 看全部命令，R 键重新读 content/。");
-    con.print("这个世界由 content/*.txt 决定：改文件 → 敲 reload → 画面当场变。");
 
     Toast toast;
     int shotIndex = 0;
@@ -1655,7 +1776,24 @@ int main(int argc, char** argv) {
     if (windowed) {
         Window win;
         if (win.open(args.width, args.height, kWindowTitle)) {
-            return runWindow(args, win, scene, rz, con, takeShot, toast);
+            const int rc = runWindow(args, win, scene, rz, con, takeShot, toast);
+            // 人一按 ESC / 点叉就存一次档：不搞"找到存档点才能存"，那套仪式感是给
+            // 长流程 RPG 的。这里存档的意义只有一条 —— 下次打开还站在昨天那个位置、
+            // 昨天改过的 content/ 也还在。存的是「离开时那一刻」的玩家位姿。
+            SaveData sv;
+            sv.level = 0;  // 关卡系统 M4 才落地，现在记 0 = 自由参观
+            sv.goals = 0;
+            sv.feet = scene.player.feet;
+            sv.yaw = scene.player.yaw;
+            sv.pitch = scene.player.pitch;
+            if (writeSave(sv)) {
+                std::printf("[存档] 已存 %s：站在 (%.2f, %.2f, %.2f)\n", kSavePath,
+                            double(sv.feet.x), double(sv.feet.y), double(sv.feet.z));
+            } else {
+                std::fprintf(stderr, "[存档] 写 %s 失败 —— 这次的位置没能记下（下次还是从老地方开始）\n",
+                             kSavePath);
+            }
+            return rc;
         }
         std::fprintf(stderr, "[窗口] 开不了窗 —— 这次改用离屏出图（--shot %s）。\n",
                      args.shot.c_str());

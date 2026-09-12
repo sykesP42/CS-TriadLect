@@ -38,6 +38,10 @@ Vec3 snapToWall(const World& world, const Vec3& from, const Vec3& to) {
 // eye()/forward()/forwardFlat()/rightFlat()/setLookAt() 都写在头文件里（一行一个，
 // 内联反而更好读）；这个 .cpp 只放真正需要"一步步算"的 updatePlayer。
 
+// 这个人站在这里合不合规（不跟任何实体打架）。存档回读、关卡出生点校验要用：
+// "存档里的位置已经被墙占了"必须能被发现，否则玩家会卡在实体里出不来。
+bool playerFits(const World& world, const Player& p) { return !blockedAt(world, p.feet); }
+
 bool updatePlayer(Player& p, const InputState& in, const World& world, float dt) {
     if (dt <= 0.0f) return false;
 

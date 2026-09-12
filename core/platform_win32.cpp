@@ -289,11 +289,14 @@ void Window::recenterMouse() {
     if (hwnd_ == nullptr || !captured_) return;
     RECT r;
     GetClientRect(HWND(hwnd_), &r);
-    POINT c{(r.right - r.left) / 2, (r.bottom - r.top) / 2};
-    ClientToScreen(HWND(hwnd_), &c);
-    SetCursorPos(c.x, c.y);
+    POINT c{(r.right - r.left) / 2, (r.bottom - r.top) / 2};  // 客户区坐标
+    // mouseX_/mouseY_ 记的必须是客户区坐标 —— onMouseTo 收到的是 WM_MOUSEMOVE 的
+    // 客户区坐标，这两个口径一混，每帧就凭空多出「窗口在屏幕上的位置」那么大的
+    // 视角增量，鼠标一动不动画面也会自己狂转。所以先记客户区中心，再换算去挪光标。
     mouseX_ = float(c.x);
     mouseY_ = float(c.y);
+    ClientToScreen(HWND(hwnd_), &c);
+    SetCursorPos(c.x, c.y);
 }
 
 double Window::time() const {
