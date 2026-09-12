@@ -45,6 +45,8 @@ struct Args {
     std::string shot = "build/out.png";  // 截图输出路径
     int width = 480;
     int height = 270;
+    bool hasWidth = false;               // 显式给过 --width 就别再替它挑窗口尺寸
+    bool hasHeight = false;
     int frames = 1;                      // 离屏模式下运行的帧数
     int threads = 0;                     // 0 = 自动
     float exposure = 1.0f;
@@ -80,8 +82,8 @@ void printUsage() {
         "\n"
         "用法: dreamlab [选项]\n"
         "  --shot <路径>      离屏截图输出路径（给了它就一定不开窗）\n"
-        "  --width <像素>     渲染宽度 / 窗口客户区宽度（默认 480）\n"
-        "  --height <像素>    渲染高度 / 窗口客户区高度（默认 270）\n"
+        "  --width <像素>     渲染宽度 / 窗口客户区宽度（离屏默认 480；开窗默认 960）\n"
+        "  --height <像素>    渲染高度 / 窗口客户区高度（离屏默认 270；开窗默认 540）\n"
         "  --scale <倍数>     按 1/N 分辨率渲染再放大铺满窗口（低配机器用 2 或 3）\n"
         "  --fpscap <帧率>    开窗锁帧（默认 60）；给 0 就不锁 —— 想看看自己机器能跑多快用它\n"
         "  --frames <帧数>    离屏：跑多少帧后出图；开窗：跑够多少帧自动退出（默认 1 / 一直跑）\n"
@@ -137,8 +139,10 @@ Args parseArgs(int argc, char** argv) {
             a.hasShot = true;
         } else if (s == "--width") {
             a.width = std::atoi(takeValue(argc, argv, i, "--width"));
+            a.hasWidth = true;
         } else if (s == "--height") {
             a.height = std::atoi(takeValue(argc, argv, i, "--height"));
+            a.hasHeight = true;
         } else if (s == "--frames") {
             a.frames = std::atoi(takeValue(argc, argv, i, "--frames"));
         } else if (s == "--threads") {
@@ -191,6 +195,10 @@ Args parseArgs(int argc, char** argv) {
             std::exit(2);
         }
     }
+    // 开窗又没显式给尺寸时，替它挑一个屏幕放得下、帧率也撑得住的大小。
+    // 以前这里沿用了离屏的默认值 480x270 —— 双击 exe 开出来是个邮票大的窗口，
+    // 第一课"拉下来就能跑"就卡在这儿。离屏出图不动：截图比对脚本指着精确像素数。
+    if (!a.hasShot && !a.hasWidth && !a.hasHeight) defaultWindowSize(a.width, a.height);
     if (a.width < 1) a.width = 1;
     if (a.height < 1) a.height = 1;
     if (a.frames < 1) a.frames = 1;

@@ -118,4 +118,9 @@ private:
     FrameInput input_;
 };
 
+// 开窗模式下没显式给 --width/--height 时该开多大。默认 960x540，屏幕装不下按
+// 16:9 等比缩。960x540 是实测"4 线程还撑得住 30 帧"的最大尺寸（见 platform_win32.cpp）。
+// 离屏出图不吃这个：那边必须严格等于 --width/--height，截图比对脚本指望着。
+void defaultWindowSize(int& w, int& h);
+
 }  // namespace dlab
