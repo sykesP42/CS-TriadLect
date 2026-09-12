@@ -414,7 +414,7 @@ void printLevelBriefing(Console& con, const LevelRuntime& rt) {
 }
 
 void runCommand(const std::string& line, Console& con, World& world, ContentWatcher& watcher,
-                const std::function<void()>& takeShot, const LevelRuntime& rt) {
+                const std::function<void()>& takeShot, Judge& judge, LevelRuntime& rt) {
     const std::vector<std::string> t = splitTokens(line);
     if (t.empty()) return;
     const std::string& cmd = t[0];
@@ -424,22 +424,44 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
         con.print("  help                 这份帮助");
         con.print("  cls                  清屏");
         con.print("  ambient <亮度|r g b> 环境光，例如 ambient 0.1 或 ambient 0.3 0.4 0.6");
+        con.print("  light                列出每盏灯的位置和强度");
         con.print("  light <强度>         主光，例如 light 60");
         con.print("  light <灯号> <强度>  指定某一盏，例如 light 0 60 / light 1 30");
-        con.print("                       （灯号就是 content/lighting.txt 里的编号）");
+        con.print("                       （灯号就是 content/lights.txt 里的编号）");
         con.print("  inspect [材质|物体]  看材质参数，例如 inspect plastic / inspect 塑料球");
         con.print("                       （不给名字就列出全部材质）");
+        con.print("  look <物体>          看物体的铭牌，例如 look lamp / look board");
         con.print("  reload               重新读 content/ 的数据文件（= 按 R）");
         con.print("  level                这一关要你干什么、现在做到哪了");
+        con.print("  level <关号>         跳到某一关，例如 level 0");
         con.print("  use terminal         同上（走到桌子前的终端按 E 走的就是这条命令）");
         con.print("  shot                 现在存一张干净的 PNG（不含面板）到 shots/");
         con.print("小提示：改 content/*.txt 再敲 reload，比敲命令更接近「做美术」这件事。");
         return;
     }
 
-    if (cmd == "level" || cmd == "use") {
+    if (cmd == "level") {
+        // level <关号>：直接跳关。宣讲现场"从哪儿开始看"、验收某一关、
+        // 学生自己回头重看第 0 关，都靠它 —— 存档里的进度不会被这一步改掉。
+        int want = -1;
+        if (t.size() >= 2 && detail::parseInt(t[1], want)) {
+            if (want < 0 || want >= levelCount()) {
+                con.printError("总共只有 " + std::to_string(levelCount()) + " 关（0 ~ " +
+                               std::to_string(levelCount() - 1) + "），没有第 " + std::to_string(want) + " 关");
+                return;
+            }
+            rt.index = want;
+            // 立刻重判一次：不重判的话，下面那段开场白念的是上一关的进度
+            rt.status = judge.evaluate(world, levelAt(rt.index));
+            con.printOk("跳到" + std::string(levelAt(rt.index).title));
+        }
+        printLevelBriefing(con, rt);
+        return;
+    }
+
+    if (cmd == "use") {
         // 现在能"用"的东西只有终端 —— 它是关卡系统的公告板。所以两条命令
-        // 打印同一段话：E 键那条路是"跟终端说话"，这条是手动查。
+        // 打印同一段话：E 键那条路是"跟终端说话"，level 是手动查。
         printLevelBriefing(con, rt);
         return;
     }
@@ -468,6 +490,22 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
     if (cmd == "light") {
         int idx = 0;
         float value = 0.0f;
+        if (t.size() == 1) {
+            // 不带参数 = 把每盏灯现在是几号、在哪儿、多亮念一遍。
+            // 学生改完 content/lights.txt 按 R，想核对"游戏里到底成了什么样"，
+            // 不用去猜、也不用翻文件 —— 编号就是文件里的 light <编号>。
+            con.print("场景里的灯（编号 = content/lights.txt 里的 light <编号>）：");
+            for (int i = 0; i < world.lightCount; ++i) {
+                const Light& l = world.lights[i];
+                char buf[192];
+                std::snprintf(buf, sizeof(buf), "  light %d  位置 %.2f %.2f %.2f  强度 %.2f  半径 %.2f", i,
+                              double(l.position.x), double(l.position.y), double(l.position.z),
+                              double(l.intensity), double(l.radius));
+                con.print(buf);
+            }
+            con.print("  光走的是一条直线到了表面才拐弯：位置改一米，地上的光斑就挪一米。");
+            return;
+        }
         if (t.size() == 2 && detail::parseNumber(t[1], value)) {
             // light 60 —— 只有一盏灯的场景里不该逼学生先记住灯号
         } else if (t.size() == 3 && detail::parseInt(t[1], idx) && detail::parseNumber(t[2], value)) {
@@ -528,6 +566,45 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
             con.print(buf);
         }
         con.print("  想看它变样：改 content/materials.txt 里 material " + matName + " 那一段，存盘后敲 reload");
+        return;
+    }
+
+    if (cmd == "look") {
+        // 「看东西」这个动作：走到一个物体前面按 E，它自己的 command 就是 look <名字>。
+        // 铭牌上的数字全部现场从世界里取 —— 灯挪了、参数改了，铭牌跟着变，
+        // 不会出现"文件上写着 A、游戏里其实是 B"这种把人带沟里的事。
+        const std::string what = t.size() > 1 ? t[1] : std::string();
+        char buf[256];
+        if (what == "lamp") {
+            const Entity* lamp = world.entity("吊灯");
+            const Vec3 mount = lamp != nullptr ? lamp->position : Vec3{0.0f, 0.0f, 0.0f};
+            con.printOk("吊灯 · 主光挂点");
+            std::snprintf(buf, sizeof(buf), "  灯罩装在 (%.2f, %.2f, %.2f)，离天花板 %.2f 米",
+                          double(mount.x), double(mount.y), double(mount.z), double(3.4f - mount.y));
+            con.print(buf);
+            if (world.lightCount > 0) {
+                const Light& main = world.lights[0];
+                std::snprintf(buf, sizeof(buf), "  content/lights.txt 的 light 0 现在挂在 (%.2f, %.2f, %.2f)，"
+                                                "强度 %.1f",
+                              double(main.position.x), double(main.position.y), double(main.position.z),
+                              double(main.intensity));
+                con.print(buf);
+                std::snprintf(buf, sizeof(buf), "  → 离灯罩 %.2f 米。差得越远，展台收到的光越少（亮度按距离平方衰减）",
+                              double(length(main.position - mount)));
+                con.print(buf);
+            }
+            con.print("  两样得一起弄：lights.txt 的 pos/intensity + materials.txt 里 material lamp 的 emissive");
+            return;
+        }
+        if (what == "board") {
+            con.printOk("展板 · 数媒组");
+            con.print("实时渲染 / 三维建模 / 材质光照 / 动效 / 交互装置 —— 就是数媒组每天在做的事。");
+            con.print("你手上跑的这个程序是一份活样本：它一个第三方库都没用，光栅化、着色、");
+            con.print("中文字模、PNG 编码全是这个仓库里自己写的 C++，六千多行。");
+            con.print("想改它：敲 level 看这一关要什么，然后改 content/*.txt，存盘按 R。");
+            return;
+        }
+        con.printError("这里没有能看的 \"" + what + "\"（能看的有：lamp 吊灯 / board 展板）");
         return;
     }
 
@@ -702,10 +779,10 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
     bool wasPassed = rt.status.passed();
 
     // 过关的这句话是整个循环里唯一的奖励，喊多了就不值钱了，所以只有一个地方喊。
+    // 后面接的那句"下面是下一关"由推进关卡的那段补 —— 这里只管把"你做到了"喊出来。
     auto announcePass = [&](const Level& lv, double now) {
         con.setVisible(true);
         con.printOk("目标达成：" + std::string(lv.goal));
-        con.print("这一关你过了。改得漂亮 —— 想看哪不对，敲 level 随时能重看这一关的要求。");
         toast.show("目标达成：" + std::string(lv.goal), now, 3.0);
     };
     if (rt.freshWin) {
@@ -792,6 +869,17 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
             // 过关只在"从没过变成过了"的那一帧喊一次（比如当场改了 content/ 按 R）。
             // 这也是唯一一处"当场看见因果"的奖励：刚敲下的那行数字，让房间亮了。
             announcePass(lv, now);
+            rt.goals = markLevelDone(rt.goals, rt.index);
+            // 过关就自动进下一关，不用回终端"领任务"。奖励刚喊完，下一关的题目紧接着
+            // 念出来 —— 学生正处在"我懂了"的那口气上，这一下最接得住。
+            if (rt.index + 1 < levelCount()) {
+                rt.index += 1;
+                rt.status = judge.evaluate(scene.world, levelAt(rt.index));
+                con.print("这一关你过了。下面是下一关 —— 想重看哪一关的要求，敲 level 随时能查。");
+                printLevelBriefing(con, rt);
+            } else {
+                con.print("这一关你过了 —— 而且它是最后一关：整条管线你已经亲手走通一遍了。");
+            }
         }
         if (rt.status.passed()) rt.goals = markLevelDone(rt.goals, rt.index);
         wasPassed = rt.status.passed();
@@ -801,10 +889,13 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         renderFrame(rz, scene, float(now));
 
         // 叠字层：HUD → 准星 → 控制台面板（后画的盖住先画的）
+        // 面板上的那一关要重新取一次：上面那段可能刚把 rt.index 推到下一关，
+        // 用旧引用的话，会出现"标题还是上一关、进度条已经是下一关"的一帧。
+        const Level& shown = levelAt(rt.index);
         const int inset = con.panelHeight(font, rz.framebuffer().width);
         GoalPanel goal;
-        goal.title = lv.title;
-        goal.goal = lv.goal;
+        goal.title = shown.title;
+        goal.goal = shown.goal;
         goal.progress = rt.status.progress;
         goal.passed = rt.status.passed();
         drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint, goal);
@@ -1460,13 +1551,18 @@ void testContent() {
     World w;
     buildWorkshop(w);
     const int chrome = w.findMaterial("chrome");
-    const ContentPatch edit = parseContent("material chrome { roughness 0.99 }\nlight 0 { intensity 7 }\n", "t");
+    const ContentPatch edit = parseContent("material chrome { roughness 0.99 }\nlight 0 { pos 1.5 2.0 3.5  intensity 7 }\n", "t");
     std::vector<std::string> log;
     ApplyStats st = applyContent(w, edit, &log);
     check(st.materials == 1 && st.lights == 1, "content：应用了一项材质和一项灯");
     check(log.empty(), "content：合法数据应用时没有任何警告");
     checkClose(w.materials[size_t(chrome)].roughness, 0.99f, 1e-6f, "content：改材质真的落到世界上");
     checkClose(w.lights[0].intensity, 7.0f, 1e-6f, "content：改灯真的落到世界上");
+    // 灯的位置是第 1 关的题面，所以它单独占一项：改 pos 得真的把灯搬走，
+    // 而且写 pos 的那一行不许顺手动到 color / radius（每一项都是独立的）。
+    checkClose(w.lights[0].position.z, 3.5f, 1e-6f, "content：改灯的 pos 真的把灯搬到了世界上");
+    check(edit.lights[0].hasPos && !edit.lights[0].hasColor && !edit.lights[0].hasRadius,
+          "content：只写 pos 的那一行，只动 pos（不动 color / radius）");
 
     // ⑤ 名字写错：不能崩、不能误改，还要把可用的名字列出来
     const ContentPatch typoName = parseContent("material 镜面球 { roughness 0.5 }\n", "t");
@@ -1581,6 +1677,21 @@ void testLevel() {
     }
     check(pctHonest, "关卡：进度条写「100%」和「判定过关」永远同时发生");
     check(progressPercent(LevelStatus{0.9999f, 0.0f}) == 99, "关卡：差一点点过关时，进度条老实写 99%");
+
+    // ⑤ 第 1 关是「改数据」关，判分里有一半读的是数据而不是画面 —— 必须验一下
+    //    这两条都不是摆设。理由很实在：第 1 关的画面判定可以靠调亮度蒙过去
+    //    （把 intensity 拧到 500，房间照样亮），要是没有数据那两条，学生就学会了
+    //    「不用理解题，把数字调大就行」——这比不做题还糟。
+    const Level& lv1 = levelAt(1);
+    World w3;
+    buildWorkshop(w3);
+    std::vector<std::string> log5;
+    for (const std::string& file : contentFileList()) applyContent(w3, loadContentFile(file), &log5);
+    applyContent(w3, parseContent("material lamp { emissive 0 0 0 }\nlight 0 { pos 2.2 2.9 1.2  intensity 500 }\n", "t"), &log5);
+    check(!judge.evaluate(w3, lv1).passed(), "关卡 1：灯罩不亮，灯拧到 500 也过不了关（判分读的是数据）");
+
+    applyContent(w3, parseContent("material lamp { emissive 4.2 3.8 3.0 }\nlight 0 { pos 0 1.1 4.6 }\n", "t"), &log5);
+    check(!judge.evaluate(w3, lv1).passed(), "关卡 1：灯罩亮了、光却还留在门口 —— 一样过不了关");
 }
 
 // 控制台自检。控制台是「学生唯一能对着画面打字的地方」，它的每一条交互都是承诺：
@@ -2006,7 +2117,7 @@ int main(int argc, char** argv) {
         }
     };
     con.setHandler([&](const std::string& line) {
-        runCommand(line, con, scene.world, watcher, takeShot, rt);
+        runCommand(line, con, scene.world, watcher, takeShot, judge, rt);
     });
 
     // 窗口模式：没有 --shot 就开窗。打不开（没桌面、远程会话…）就老老实实退回离屏，

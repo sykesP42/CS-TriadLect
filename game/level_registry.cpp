@@ -12,7 +12,8 @@ namespace dlab {
 namespace {
 
 const Level* const kLevels[] = {
-    &levelDark(),  // 第 0 关
+    &levelDark(),        // 第 0 关
+    &levelFirstLight(),  // 第 1 关
 };
 
 constexpr int kLevelCount = int(sizeof(kLevels) / sizeof(kLevels[0]));

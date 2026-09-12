@@ -9,12 +9,14 @@
 //
 // 语法（P0）：
 //     # 井号到行尾是注释
-//     material chrome { albedo 0.95 0.93 0.90  roughness 0.06  metallic 1.0 }
-//     light 0         { color 1.0 0.93 0.82    intensity 48     radius 0.9 }
-//     ambient 0.42 0.44 0.50
+//     material chrome { albedo 0.95 0.93 0.90  roughness 0.06  metallic 1.0 }   ← materials.txt
+//     light 0         { pos 2.2 2.9 1.2  color 1.0 0.93 0.82  intensity 48  radius 0.9 }
+//     ambient 0.42 0.44 0.50                                                    ← lighting.txt
 //     sky     0.46 0.56 0.78
 //     ground  0.24 0.20 0.17
 // 花括号可以换行写，逗号当空格用（0.5, 0.2, 0.2 也认），大小写敏感。
+// 一个文件里能写哪几类块不限 —— 现在 materials.txt 放 material，lights.txt 放 light，
+// lighting.txt 放环境色。分文件只是为了"一次只开一个、别改错地方"，语法是同一套。
 #pragma once
 
 #include <algorithm>
@@ -44,6 +46,7 @@ struct MaterialPatch {
 
 struct LightPatch {
     int index = 0;
+    bool hasPos = false;        Vec3 pos{};
     bool hasColor = false;      Vec3 color{};
     bool hasIntensity = false;  float intensity = 0.0f;
     bool hasRadius = false;     float radius = 0.0f;
@@ -63,7 +66,7 @@ struct ContentPatch {
 
 // 被监视的 content 文件清单。M4 做关卡时按关卡换一批（所以这里返回的是 vector）。
 inline std::vector<std::string> contentFileList() {
-    return {"content/materials.txt", "content/lighting.txt"};
+    return {"content/materials.txt", "content/lights.txt", "content/lighting.txt"};
 }
 
 // ------------------------------------------------------------------ 接口
@@ -191,10 +194,10 @@ inline const FieldSpec* kMaterialFields() {
 inline const int kMaterialFieldCount = 5;
 
 inline const FieldSpec* kLightFields() {
-    static const FieldSpec f[] = {{"color", 3}, {"intensity", 1}, {"radius", 1}};
+    static const FieldSpec f[] = {{"pos", 3}, {"color", 3}, {"intensity", 1}, {"radius", 1}};
     return f;
 }
-inline const int kLightFieldCount = 3;
+inline const int kLightFieldCount = 4;
 
 inline const FieldSpec* kTopFields() {
     static const FieldSpec f[] = {{"ambient", 3}, {"sky", 3}, {"ground", 3}};
@@ -247,7 +250,10 @@ inline bool fillMaterial(MaterialPatch& mp, const std::string& key, const std::v
 }
 
 inline bool fillLight(LightPatch& lp, const std::string& key, const std::vector<float>& n) {
-    if (key == "color") {
+    if (key == "pos") {
+        lp.pos = toVec3(n);
+        lp.hasPos = true;
+    } else if (key == "color") {
         lp.color = toVec3(n);
         lp.hasColor = true;
     } else if (key == "intensity") {
@@ -537,6 +543,7 @@ inline ApplyStats applyContent(World& world, const ContentPatch& patch, std::vec
             continue;
         }
         Light& l = world.lights[lp.index];
+        if (lp.hasPos) l.position = lp.pos;
         if (lp.hasColor) l.color = lp.color;
         if (lp.hasIntensity) l.intensity = lp.intensity;
         if (lp.hasRadius) l.radius = lp.radius;

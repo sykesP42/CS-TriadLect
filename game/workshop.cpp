@@ -85,10 +85,15 @@ Workshop buildWorkshop(World& w) {
     stone.roughness = 0.62f;
     ws.matStone = w.addMaterial("stone", stone);
 
-    // 灯罩：自发光。它既是画面里"亮着的东西"，也是主光的位置
+    // 灯罩：挂在桌子右上方的天花板上。它自己会发光（= 灯亮着的时候那个亮块），
+    // 但它照不亮别人 —— 照亮房间的是 content/lights.txt 里的 light 0，
+    // 两者的位置必须一致，不然会出现"灯罩挂在天上、光却打在别处"这种一眼假的画面。
+    // emissive 的代码默认也是 0（和数据文件一致）：世界出厂就是黑的，
+    // 什么亮、什么不亮全由 content/ 决定 —— 数据文件写坏了退回代码默认，
+    // 退回的也是"一间黑屋子"，而不是白送一个亮着的灯罩。
     Material lampMat;
-    lampMat.albedo = Vec3{0.0f, 0.0f, 0.0f};
-    lampMat.emissive = Vec3{4.2f, 3.8f, 3.0f};
+    lampMat.albedo = Vec3{0.08f, 0.08f, 0.09f};  // 深灰铁壳，暗房间里也看得出轮廓
+    lampMat.emissive = Vec3{0.0f, 0.0f, 0.0f};
     lampMat.roughness = 0.5f;
     ws.matLamp = w.addMaterial("lamp", lampMat);
 
@@ -133,8 +138,12 @@ Workshop buildWorkshop(World& w) {
 
     // 吊灯：主光在这里。挂在离天花板 0.5m 的位置，灯罩本体刚好挡住天花板上
     // 那个"距离 0.5m 的平方反比热点"，不然会糊成一大片白。
+    // 它能被"看"（look lamp）：铭牌上写着它的挂点和此刻主光实际在哪儿 ——
+    // 第 1 关的学生就是靠这块铭牌把灯装回去的。
     Entity lamp = makeEntity("吊灯", mLampBody, ws.matLamp, Vec3{2.2f, 2.9f, 1.2f});
     lamp.solid = false;
+    lamp.prompt = "按 E 看吊灯铭牌";
+    lamp.command = "look lamp";
     ws.entLamp = w.addEntity(lamp);
 
     // 左墙展板
@@ -167,16 +176,22 @@ Workshop buildWorkshop(World& w) {
     }
 
     // ---------------------------------------------------------------- 光照
-    w.lights[0].position = Vec3{2.2f, 2.9f, 1.2f};  // = 吊灯本体位置
-    w.lights[0].color = Vec3{1.0f, 0.93f, 0.82f};
-    w.lights[0].intensity = 48.0f;
+    // 代码里这两盏灯一律是关着的：世界出厂的状态就是"一间黑屋子"，
+    // 哪盏灯开着、吊在哪，由 content/lights.txt 决定（数据覆盖代码）。
+    // 这样即使数据文件被写坏、整份不生效，退回代码默认也还是黑屋子 ——
+    // 不会出现"改错了反而把房间点亮、看起来像过关了"。
+    //
+    // light 0 的位置 = 吊灯的挂点（灯罩实体在同一个坐标上）。
     // radius 是灯的物理尺寸：吊灯是块 0.84m 的发光板，所以给它 0.9 ——
     // 相当于一盏"软盒灯"，近距离不会数值爆炸（这就是 shader 里那行 dist2 + radius）
+    w.lights[0].position = Vec3{2.2f, 2.9f, 1.2f};
+    w.lights[0].color = Vec3{1.0f, 0.93f, 0.82f};
+    w.lights[0].intensity = 0.0f;
     w.lights[0].radius = 0.9f;
 
     w.lights[1].position = Vec3{-4.2f, 2.6f, 1.6f};  // 冷色补光，把暗部从纯黑里拉回来
     w.lights[1].color = Vec3{0.45f, 0.62f, 1.0f};
-    w.lights[1].intensity = 26.0f;
+    w.lights[1].intensity = 0.0f;
     w.lights[1].radius = 0.45f;
     w.lightCount = 2;
 

@@ -95,6 +95,7 @@ const Level& levelAt(int index);       // 越界的下标会被夹到合法范�
 int findLevel(const std::string& id);  // 找不到返回 -1
 
 // 每一关实现在 game/levels/ 下，在这里认个脸
-const Level& levelDark();  // 第 0 关「黑暗」
+const Level& levelDark();        // 第 0 关「黑暗」
+const Level& levelFirstLight();  // 第 1 关「第一束光」
 
 }  // namespace dlab
