@@ -20,7 +20,8 @@ if not exist build\dreamlab.exe (
     exit /b 1
 )
 
-echo Controls: WASD move, mouse look, E interact, ~ console, R reload content/, F2 shot, Esc quit.
+echo Controls: WASD move, mouse look, E interact, R reload content/, F2 shot, Esc menu.
+echo No console hotkey -- walk to the terminal and press E to open it.
 echo You start in a pitch-black room -- that is level 0 itself, not a crash.
 echo.
 build\dreamlab.exe %*
