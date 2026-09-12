@@ -2049,15 +2049,35 @@ void testLevel() {
     //     每一关都得读 0 —— 这条挡的是"删个文件反而过了"。前面三关各有一处默认值是
     //     故意留黑的（灯、球、地板），但那是三处分散的实现细节；这里从外面把整件事
     //     钉住：以后再加关卡，忘了把默认值调成"没做完的样子"，自检当场会红。
+    //    注意**从第 1 关开始查**：第 0 关的判定跟着着色器里的 kAmbientStrength 走，
+    //    而那正是学生要亲手改的那一行 —— 他改对之后（房间本来就亮了），这一关当然
+    //    不读 0。以前这里连第 0 关一起查，于是"学生照游戏说的做对了、一跑自检却报错"，
+    //    一条会因为"做对了"而红的断言本身就不该存在。
     World wRaw;
     buildWorkshop(wRaw);
     int rawBad = -1;
-    for (int i = 0; i < levelCount(); ++i) {
+    for (int i = 1; i < levelCount(); ++i) {
         if (judge.evaluate(wRaw, levelAt(i)).progress > 0.0f) rawBad = i;
     }
     std::string rawMsg = "关卡：content/ 一个文件都没有时，每一关都读 0%（丢文件不等于过关）";
     if (rawBad >= 0) rawMsg += " —— 第 " + std::to_string(rawBad) + " 关不为 0";
     check(rawBad < 0, rawMsg.c_str());
+
+    //    第 0 关换成一条**永远成立**的断言：删掉 content/ 不会让它比有数据时更亮。
+    //    这才是"删数据白送过关"对第 0 关的意义 —— 数据不该是它的开关，
+    //    它的开关是学生自己改的那行代码。
+    {
+        // （loadFresh 定义在下面几行，这里就地写一遍那三行 —— 这一块比它早）
+        World wFull0;
+        buildWorkshop(wFull0);
+        std::vector<std::string> logRaw;
+        for (const std::string& file : contentFileList()) {
+            applyContent(wFull0, loadContentFile(file), &logRaw);
+        }
+        const float pFull = judge.evaluate(wFull0, levelAt(0)).progress;
+        const float pRaw = judge.evaluate(wRaw, levelAt(0)).progress;
+        check(pRaw <= pFull + 1e-4f, "关卡：删掉 content/ 不会让第 0 关更亮（数据不是它的开关）");
+    }
 
     // ② 判分跟着世界走：同一场景，把灯打开，评委机位必须更亮、进度只能升不能降。
     //    这条盯的是「判分方向没写反」——把变亮判成变暗是这一块最容易犯的错。
