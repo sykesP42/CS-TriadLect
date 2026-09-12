@@ -70,6 +70,8 @@ struct Args {
     bool noclip = false;
     bool reset = false;                  // --reset：删掉存档，从头开始
     int level = -1;                      // --level N：直接站在第 N 关（-1 = 听存档的）
+    bool allLevels = false;              // --all-levels：四关依次走一遍做冒烟
+    bool autoSolve = false;              // --auto：配合 --all-levels，每关先把解答喂进去
     bool help = false;
 };
 
@@ -98,6 +100,9 @@ void printUsage() {
         "  --noclip           穿墙（调试和拍图用）\n"
         "  --reset            删掉存档，从出生点从头开始（存档在 saved/save.bin）\n"
         "  --level <序号>     直接站在第 N 关（0 = 第 0 关「黑暗」），不看存档\n"
+        "  --all-levels       四关依次走一遍做冒烟（每关判一次分，配 --shot 就每关出一张图）\n"
+        "  --auto             配 --all-levels：每关先把解答喂进去再判分。第 0 关没有条目 ——\n"
+        "                     它的解答是改 kAmbientStrength 再重编译，运行时达成不了\n"
         "  --preview [文本]   把中文字模画成终端 ASCII 图（检查字模是否完好）\n"
         "  --hud              在画面上叠一层文字（验证中文渲染进 PNG）\n"
         "  --watch <毫秒>     先应用 content/，再等文件变化并重新应用，然后才截图\n"
@@ -186,6 +191,10 @@ Args parseArgs(int argc, char** argv) {
             a.reset = true;
         } else if (s == "--level") {
             a.level = std::atoi(takeValue(argc, argv, i, "--level"));
+        } else if (s == "--all-levels") {
+            a.allLevels = true;
+        } else if (s == "--auto") {
+            a.autoSolve = true;
         } else if (s == "--selftest") {
             a.selftest = true;
         } else if (s == "-h" || s == "--help") {
@@ -1594,6 +1603,62 @@ void testRaycast() {
 
 // content/*.txt 的自检。这里的重点是「报错质量」和「数据↔场景对得上号」——
 // 改数据的同学没有调试器，他唯一的反馈就是这些报错文字。
+// ---- T4.5：--all-levels --auto 用的"解答表" ----------------------------------
+//
+// 每关的解答写成 content/ 的语法，走**真实的解析 → 应用**那条路（学生按 R 走的就是
+// 它），但**不落盘** —— 绝不能把学生的 content/*.txt 覆盖掉。
+//
+// 第 0 关故意没有条目。它的正解是改 game/shaders/lighting.cpp 里的 kAmbientStrength，
+// 那是**编译期常数**，运行时改不了。想让它自动过关只能用别的路（比如在评委视线里
+// 点一盏灯 —— 实测也能读到 100%），可那是学生不会走的路径；把它算进来，"四关都能
+// 自动达成"这句话就注水了。宁可少一关，也不让验收指标虚高。
+struct AutoSolution {
+    int level;
+    const char* what;   // 人话说明，打在输出里
+    const char* patch;  // content/ 语法
+};
+
+const AutoSolution kAutoSolutions[] = {
+    {1, "灯装回吊灯位、拧到 48，灯罩点起来",
+     "light 0 { pos 2.20 2.90 1.20  intensity 48 }\n"
+     "material lamp { emissive 4.2 3.8 3.0 }\n"},
+    {2, "三个球改成样板值（只动出厂是错的那几个数，其余不碰）",
+     "material chrome  { roughness 0.06  metallic 1.00 }\n"
+     "material plastic { roughness 0.26 }\n"
+     "material clay    { albedo 0.74 0.53 0.32 }\n"},
+    {3, "地板平铺 4x4、repeat、bilinear",
+     "material floor { uvscale 4 4  wrap repeat  filter bilinear }\n"},
+};
+
+const AutoSolution* autoSolutionFor(int level) {
+    for (const AutoSolution& s : kAutoSolutions)
+        if (s.level == level) return &s;
+    return nullptr;
+}
+
+// 把某关的解答应用上去。返回 false = 这份解答没真正生效，调用方必须当失败处理 ——
+// 这正是 T4.2 那条教训：注入式测量不检查解析结果，测的就是"退回代码默认值的世界"，
+// 数字好看但没意义。所以这里解析失败、名字对不上、撞上锁，三种都算失败。
+bool applyAutoSolution(World& world, int level, std::vector<std::string>& log) {
+    const AutoSolution* s = autoSolutionFor(level);
+    if (s == nullptr) return false;
+
+    const ContentPatch patch = parseContent(s->patch, "<--auto>");
+    if (!patch.ok()) {
+        for (const std::string& e : patch.errors)
+            std::fprintf(stderr, "[--auto] 第 %d 关的解答解析失败：%s\n", level, e.c_str());
+        return false;
+    }
+    const ApplyStats st = applyContent(world, patch, &log);
+    if (st.missing != 0 || st.locked != 0) {
+        std::fprintf(stderr, "[--auto] 第 %d 关的解答没生效：对不上的名字 %d 个、撞锁 %d 个\n",
+                     level, st.missing, st.locked);
+        return false;
+    }
+    return true;
+}
+
+
 void testContent() {
     // ① 正常解析：注释、逗号当空格、同一行写完一个块
     const ContentPatch good = parseContent(
@@ -1948,6 +2013,20 @@ void testLevel() {
     check(judge.evaluate(w11, lv1).passed(), "关卡 1：地板还是被调乱的样子，灯那三件做对了照样过关");
     applyContent(w11, parseContent("material floor { uvscale 4 4  wrap repeat  filter bilinear }\n", "t"), &log6);
     check(judge.evaluate(w11, lv1).passed(), "关卡 1：第 3 关把地板修好之后，第 1 关还是过关（两关不互相拖累）");
+
+    // ⑨ --all-levels --auto 用的那份解答表，每一关都必须**真的能过**。
+    //    钉的是"冒烟测试的答案本身"：解答写错了、或者哪一关的判定漂了，自检当场就红，
+    //    不用等谁想起来跑一次 --all-levels --auto。第 0 关没有条目（运行时无解，
+    //    原因写在那份表头上），这里自然跳过。
+    for (int i = 0; i < levelCount(); ++i) {
+        if (autoSolutionFor(i) == nullptr) continue;
+        World wa;
+        loadFresh(wa);
+        std::vector<std::string> logAuto;
+        const std::string tag = "--auto：第 " + std::to_string(i) + " 关的解答";
+        check(applyAutoSolution(wa, i, logAuto), (tag + "能应用上去（解析 / 名字 / 锁都没问题）").c_str());
+        check(judge.evaluate(wa, levelAt(i)).passed(), (tag + "真的能过关").c_str());
+    }
 }
 
 // 控制台自检。控制台是「学生唯一能对着画面打字的地方」，它的每一条交互都是承诺：
@@ -2294,7 +2373,10 @@ int main(int argc, char** argv) {
 
     // 存档：只有开窗模式（= 真的在玩）才读。离屏出图必须每次从同一个出生点开始，
     // 不然"昨天的图和今天逐像素对不上"，而逐像素比对正是本项目的验证主手段。
-    const bool windowed = !args.hasShot;
+    // --all-levels 也是一种离屏模式：它是冒烟测试，跑完就退出，不该开窗。
+    // （漏了这一条的话，不给 --shot 的 --all-levels 会掉进开窗路径 —— 参数被整个
+    //   忽略、窗口开着一直跑，看起来就像"命令没反应"。）
+    const bool windowed = !args.hasShot && !args.allLevels;
     if (args.reset) {
         clearSave();
         std::printf("[存档] 已清空 %s\n", kSavePath);
@@ -2450,74 +2532,154 @@ int main(int argc, char** argv) {
     const std::vector<WalkStep> walk = parseWalk(args.walk);
     const float fixedDt = 1.0f / 60.0f;
 
-    double totalMs = 0.0;
-    for (int f = 0; f < args.frames; ++f) {
-        const float t = float(f) / 60.0f;
-        const InputState in = walkInputAt(walk, f);
-        updatePlayer(scene.player, in, scene.world, fixedDt);
-        syncCamera(scene);
-        if (in.interact) interact(scene, con, toast, 0.0);
+    // ---- 跑一关：渲染 frames 帧 → 判分 →（可选）叠文字层 →（可选）写 PNG
+    // 抽成 lambda 是为了 --all-levels：四关走的是同一段代码，不能各写一遍 ——
+    // 写两遍迟早会分叉成"单关能跑、串联跑出来的是另一回事"。
+    auto runOneLevel = [&](int levelIndex, const std::string& shotPath) {
+        rt.index = levelIndex;
 
-        const auto t0 = std::chrono::steady_clock::now();
-        rz.framebuffer().clear(kClearColor);
-        renderFrame(rz, scene, t);
-        const auto t1 = std::chrono::steady_clock::now();
-        totalMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        double totalMs = 0.0;
+        for (int f = 0; f < args.frames; ++f) {
+            const float t = float(f) / 60.0f;
+            const InputState in = walkInputAt(walk, f);
+            updatePlayer(scene.player, in, scene.world, fixedDt);
+            syncCamera(scene);
+            if (in.interact) interact(scene, con, toast, 0.0);
 
-        if (args.trace) {
-            std::printf("[trace] f=%d pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f\n", f,
-                        double(scene.player.feet.x), double(scene.player.feet.y),
-                        double(scene.player.feet.z), double(scene.player.yaw),
-                        double(scene.player.pitch));
+            const auto t0 = std::chrono::steady_clock::now();
+            rz.framebuffer().clear(kClearColor);
+            renderFrame(rz, scene, t);
+            const auto t1 = std::chrono::steady_clock::now();
+            totalMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+            if (args.trace) {
+                std::printf("[trace] f=%d pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f\n", f,
+                            double(scene.player.feet.x), double(scene.player.feet.y),
+                            double(scene.player.feet.z), double(scene.player.yaw),
+                            double(scene.player.pitch));
+            }
+        }
+
+        // 走动会往控制台里写东西（按 E 的交互），所以帧跑完再打一遍，离屏也能"看见"交互结果
+        if (!walk.empty()) {
+            for (int i = 0; i < con.lineCount(); ++i)
+                std::printf("[console] %s\n", con.lineAt(i).c_str());
+        }
+
+        const double avgMs = totalMs / double(args.frames);
+        std::printf("[dreamlab-rt] 三角形 %lld 个（剔除 %lld），着色 %lld 像素\n", rz.drawnTriangles(),
+                    rz.culledTriangles(), rz.shadedPixels());
+        std::printf("[dreamlab-rt] 平均每帧 %.2f ms（%.0f FPS），光栅化 %.2f ms\n", avgMs,
+                    avgMs > 0.0 ? 1000.0 / avgMs : 0.0, rz.lastRasterMs());
+        std::printf("[dreamlab-rt] 画面平均亮度 %.4f\n", rz.framebuffer().meanLuminance());
+
+        // 关掉引擎重判一次：这几十帧里世界可能被 --walk 走、被 --cmd 改、被 --watch 重载过。
+        // 判定的"收卷"必须发生在这一切之后，否则截的图和量出来的进度说的不是同一件事。
+        const Level& lv = levelAt(rt.index);
+        rt.status = judge.evaluate(scene.world, lv);
+        std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f，其中灯贡献 %.4f）\n",
+                    lv.title, lv.goal, progressPercent(rt.status), double(rt.status.luminance),
+                    double(rt.status.lightLuminance));
+
+        // 文字层（HUD / 控制台）是最后一步叠上去的：不进深度测试、不参与光照，
+        // 但和 3D 走同一条 ACES → sRGB 出口 —— 所以 UI 的颜色也得给线性 HDR 值。
+        if (args.hud || con.visible()) {
+            // 故意不检查返回值：字模加载失败时 Font 会画红块占位（绝不白屏），
+            // 修复提示已经由 loadFromFile 打到 stderr 上了。
+            Font font;
+            font.loadFromFile("assets/font/pixel12.bin");
+            const int inset = con.panelHeight(font, renderW);
+            GoalPanel goal;
+            goal.title = lv.title;
+            goal.goal = lv.goal;
+            goal.progress = rt.status.progress;
+            goal.passed = rt.status.passed();
+            if (args.hud)
+                drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset,
+                        kWindowHint, goal);
+            if (con.visible()) con.draw(rz.framebuffer(), font);
+        }
+
+        if (shotPath.empty()) return true;  // --all-levels 不给 --shot 时只判分，不出图
+        const std::vector<uint8_t> rgb = rz.framebuffer().toRGB8(args.exposure, true);
+        if (!writePNG(shotPath.c_str(), renderW, renderH, rgb.data())) {
+            std::fprintf(stderr, "[错误] 写 PNG 失败: %s\n", shotPath.c_str());
+            return false;
+        }
+        std::printf("[dreamlab-rt] 已写出 %s\n", shotPath.c_str());
+        return true;
+    };
+
+    if (!args.allLevels) {
+        if (!runOneLevel(rt.index, args.shot)) return 1;
+        return 0;
+    }
+
+    // ---- --all-levels：四关依次走一遍做冒烟 ----
+    //
+    // 判"通过"的标准不是"四关都过关"（出厂状态下本来就该都不过），而是：
+    //   · 不喂解答时：四关都判出合法分数（不崩、不读越界），这就是冒烟
+    //   · 喂了 --auto 时：**每关有解答的都必须真的过关** —— 没过就是解答写错了、
+    //     或者关卡判定漂了，两种都要当场红
+    // 第 0 关在 --auto 下算"跳过"，不算失败（原因见 kAutoSolutions 上面的说明）。
+    int passed = 0;
+    int skipped = 0;
+    int failed = 0;
+    const int total = levelCount();
+
+    for (int i = 0; i < total; ++i) {
+        std::printf("\n===== 第 %d 关 / 共 %d 关 =====\n", i, total);
+        const AutoSolution* sol = autoSolutionFor(i);
+        bool expectPass = false;
+
+        if (args.autoSolve) {
+            if (sol == nullptr) {
+                ++skipped;
+                std::printf("[--auto] 第 %d 关跳过，不予自动达成。\n", i);
+                std::printf("[--auto]   它的正解是改 game/shaders/lighting.cpp 的 kAmbientStrength\n");
+                std::printf("[--auto]   （编译期常数）再重新编译 —— 运行时改不了。\n");
+                std::printf("[--auto]   能过它的另一条路是点一盏灯照进评委画面，但那是学生不会\n");
+                std::printf("[--auto]   走的路径；算进来，四关可自动达成这句话就注水了。\n");
+            } else {
+                std::vector<std::string> log;
+                if (!applyAutoSolution(scene.world, i, log)) {
+                    ++failed;
+                    std::printf("[--auto] 第 %d 关的解答**没生效**（详见上面的报错）\n", i);
+                } else {
+                    expectPass = true;
+                    std::printf("[--auto] 已喂入第 %d 关的解答：%s\n", i, sol->what);
+                }
+            }
+        }
+
+        // --all-levels 出图时，把关号插到扩展名前面：build/l.png → build/l_level2.png
+        std::string shot;
+        if (args.hasShot) {
+            shot = args.shot;
+            const size_t dot = shot.find_last_of('.');
+            const size_t slash = shot.find_last_of("/\\");
+            if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+                shot = shot.substr(0, dot) + "_level" + std::to_string(i) + shot.substr(dot);
+            } else {
+                shot += "_level" + std::to_string(i);
+            }
+        }
+
+        if (!runOneLevel(i, shot)) return 1;
+
+        if (rt.status.passed()) {
+            ++passed;
+        } else if (expectPass) {
+            ++failed;
+            std::printf("[--all-levels] ✗ 第 %d 关喂了解答却没过关（进度 %d%%）—— 解答或判定有问题\n", i,
+                        progressPercent(rt.status));
         }
     }
 
-    // 走动会往控制台里写东西（按 E 的交互），所以帧跑完再打一遍，离屏也能"看见"交互结果
-    if (!walk.empty()) {
-        for (int i = 0; i < con.lineCount(); ++i) std::printf("[console] %s\n", con.lineAt(i).c_str());
-    }
-
-    const double avgMs = totalMs / double(args.frames);
-    std::printf("[dreamlab-rt] 三角形 %lld 个（剔除 %lld），着色 %lld 像素\n", rz.drawnTriangles(),
-                rz.culledTriangles(), rz.shadedPixels());
-    std::printf("[dreamlab-rt] 平均每帧 %.2f ms（%.0f FPS），光栅化 %.2f ms\n", avgMs,
-                avgMs > 0.0 ? 1000.0 / avgMs : 0.0, rz.lastRasterMs());
-    std::printf("[dreamlab-rt] 画面平均亮度 %.4f\n", rz.framebuffer().meanLuminance());
-
-    // 关掉引擎重判一次：这几十帧里世界可能被 --walk 走、被 --cmd 改、被 --watch 重载过。
-    // 判定的"收卷"必须发生在这一切之后，否则截的图和量出来的进度说的不是同一件事。
-    const Level& lv = levelAt(rt.index);
-    rt.status = judge.evaluate(scene.world, lv);
-    std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f，其中灯贡献 %.4f）\n", lv.title,
-                lv.goal, progressPercent(rt.status), double(rt.status.luminance),
-                double(rt.status.lightLuminance));
-
-    // 文字层（HUD / 控制台）是最后一步叠上去的：不进深度测试、不参与光照，
-    // 但和 3D 走同一条 ACES → sRGB 出口 —— 所以 UI 的颜色也得给线性 HDR 值。
-    if (args.hud || con.visible()) {
-        // 故意不检查返回值：字模加载失败时 Font 会画红块占位（绝不白屏），
-        // 修复提示已经由 loadFromFile 打到 stderr 上了。
-        Font font;
-        font.loadFromFile("assets/font/pixel12.bin");
-        // 先问面板要占多高，状态栏好让开；画面板本身放在最后（后画的盖住先画的）
-        const int inset = con.panelHeight(font, renderW);
-        GoalPanel goal;
-        goal.title = lv.title;
-        goal.goal = lv.goal;
-        goal.progress = rt.status.progress;
-        goal.passed = rt.status.passed();
-        if (args.hud) drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset,
-                              kWindowHint, goal);
-        if (con.visible()) con.draw(rz.framebuffer(), font);
-        std::printf("[dreamlab-rt] 文字层已叠加（控制台 %d 行，面板 %d px），缺字 %d 个\n", con.lineCount(),
-                    inset, font.missingGlyphs());
-    }
-
-    const std::vector<uint8_t> rgb = rz.framebuffer().toRGB8(args.exposure, true);
-    if (!writePNG(args.shot.c_str(), renderW, renderH, rgb.data())) {
-        std::fprintf(stderr, "[错误] 写 PNG 失败: %s\n", args.shot.c_str());
-        return 1;
-    }
-    std::printf("[dreamlab-rt] 已写出 %s\n", args.shot.c_str());
+    std::printf("\n[--all-levels] 四关走完：过关 %d 关", passed);
+    if (skipped > 0) std::printf("，跳过 %d 关（运行时无解答）", skipped);
+    if (failed > 0) std::printf("，**失败 %d 关**", failed);
+    std::printf("\n");
+    return failed == 0 ? 0 : 1;
     return 0;
 }
