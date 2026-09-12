@@ -1120,7 +1120,7 @@ void interact(Scene& s, Console& con, Toast& toast, double now, int levelIndex) 
 // ---------------------------------------------------------------- 开窗模式
 int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Console& con,
               const std::function<void()>& takeShot, Toast& toast, Judge& judge, LevelRuntime& rt,
-              Settings& settings, int& resIndex) {
+              Settings& settings, int& resIndex, ContentWatcher& watcher) {
     Font font;
     font.loadFromFile("assets/font/pixel12.bin");  // 失败会画红块占位，绝不白屏
 
@@ -1311,7 +1311,46 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
                 menu.update(menuIn, rz.framebuffer().width, rz.framebuffer().height, font);
 
             if (act.kind == MenuAction::Quit) break;  // 走正常退出路径（退出时会写存档）
-            if (act.kind == MenuAction::Resume) {
+
+            if (act.kind == MenuAction::Restart) {
+                // 从头开始：清进度 + 把**所有已跟踪的文件**还原成仓库里的样子。
+                //
+                // 为什么用 git 而不是"在仓库里再存一份出厂副本"：仓库里那份**就是**
+                // 出厂状态，再存一份副本迟早会和正本对不上（学生一改，两处都得改）。
+                // 顺带这也是设计文档里"覆盖 Git 入门"的一条 —— 他会亲眼看到
+                // git 能一键把改动全撤掉。
+                menu.setVisible(false);
+                win.setMouseCaptured(true);
+                clearSave();
+                const int rc = std::system("git checkout -- .");
+
+                rt.index = 0;
+                rt.goals = 0;
+                // 数据文件当场重读：不重启就能看见 content/ 回到了出厂的样子
+                std::vector<std::string> reloadLog;
+                watcher.forceReload(scene.world, &reloadLog);
+                rt.status = judge.evaluate(scene.world, levelAt(0));
+                // 人回出生点 —— 和 --reset 一样（存档已经清了）
+                scene.player.feet = Vec3{0.0f, 0.0f, 4.5f};
+                scene.player.yaw = 0.0f;
+                scene.player.pitch = -0.06f;
+                syncCamera(scene);
+
+                con.setVisible(true);
+                if (rc == 0) {
+                    con.printOk("已经回到起点：进度清空，content/ 和代码都还原成仓库里的样子了。");
+                } else {
+                    con.printError("进度清了，但**文件没能还原**（git 用不了，或者这里不是 git 仓库）。");
+                    con.print("手动办法：重新 clone 一份，或者把 content/ 和 game/ 换回仓库里的版本。");
+                }
+                // 有一件事游戏自己做不到，必须说清楚，不然他会以为"我明明重置了，怎么还是亮的"
+                if (rt.status.passed()) {
+                    con.print("注意：现在跑的还是**改动过的那份二进制**，所以第 0 关仍然是亮的。");
+                    con.print("退出后重新运行一次 build.bat，它就是全黑的了 —— 那一步游戏做不到。");
+                }
+                printLevelBriefing(con, rt, scene.world, judge);
+                toast.show("已回到起点", now, 3.0);
+            } else if (act.kind == MenuAction::Resume) {
                 menu.setVisible(false);
                 win.setMouseCaptured(true);
             } else if (act.kind == MenuAction::SetResolution || act.kind == MenuAction::SetMode) {
@@ -2935,13 +2974,18 @@ void testMenu() {
     //    左上角那一块能点中，看着就是"菜单大部分按不了"（实测报过这个）。
     //    这条是纯算术，所以在自检里钉住，不靠开窗点。
     {
-        // 最大化：客户区 2560x1369（渲染还是 1280x720）。(1280,944) 换算后应落在
-        // 「退出游戏」那一行（framebuffer 坐标约 496）。
-        float mx = 1280.0f;
-        float my = 944.0f;
+        // 最大化：客户区 2560x1369，渲染还是 1280x720。
+        // 点的位置**从布局算**，不写死坐标 —— 菜单插一行就会失效（这次加「从头开始」
+        // 就被这条抓到了：写死的那个 y 落到了新行上，"点退出游戏"自然就不中了）。
+        const Menu::Layout LM = Menu::computeLayout(1280, 720, font);
+        const float fbX = float(LM.panelX + LM.panelW / 2);
+        const float fbY = float(Menu::rowTop(LM, Menu::kRowQuit) + LM.rowH / 2);
+        // 在客户区里点同一个位置，换算回来应当还落在那一行
+        float mx = fbX * 2560.0f / 1280.0f;
+        float my = fbY * 1369.0f / 720.0f;
         mouseToFramebuffer(mx, my, 2560, 1369, 1280, 720);
-        checkClose(mx, 640.0f, 0.5f, "菜单：客户区 X 坐标换算到 framebuffer");
-        checkClose(my, 496.5f, 1.0f, "菜单：客户区 Y 坐标换算到 framebuffer");
+        checkClose(mx, fbX, 0.5f, "菜单：客户区 X 坐标换算到 framebuffer");
+        checkClose(my, fbY, 1.0f, "菜单：客户区 Y 坐标换算到 framebuffer");
 
         FrameInput in;
         in.mousePressed = true;
@@ -2962,6 +3006,42 @@ void testMenu() {
         mouseToFramebuffer(zx, zy, 0, 0, 1280, 720);
         checkClose(zx, 5.0f, 0.01f, "菜单：客户区尺寸为 0 时坐标不动（不除零）");
         checkClose(zy, 7.0f, 0.01f, "菜单：客户区尺寸为 0 时 Y 也不动");
+    }
+
+    // ⑪ 「从头开始」是破坏性操作（清进度 + 还原所有文件），所以要点两次。
+    //    这条守的是"手滑一下就把学生的东西全抹了" —— 那种事出一次就够劝退的。
+    {
+        const Menu::Layout L2 = Menu::computeLayout(1280, 720, font);
+        FrameInput in;
+        in.mousePressed = true;
+        in.mouseX = float(L2.panelX + L2.panelW / 2);
+        in.mouseY = float(Menu::rowTop(L2, Menu::kRowRestart) + L2.rowH / 2);
+
+        Menu m;
+        m.setVisible(true);
+        check(m.update(in, 1280, 720, font).kind == MenuAction::None,
+              "菜单：「从头开始」第一次点只是待命，不执行");
+        check(m.restartArmed(), "菜单：点过之后待命状态立起来了（标签会变、会变红）");
+        check(m.update(in, 1280, 720, font).kind == MenuAction::Restart,
+              "菜单：「从头开始」第二次点才真的执行");
+        check(!m.restartArmed(), "菜单：执行之后待命清掉（不会连着又触发一次）");
+
+        // 点别的行取消待命 —— 免得"点一下、去做点别的、过会儿又点回来"变成误清空
+        Menu m2;
+        m2.setVisible(true);
+        m2.update(in, 1280, 720, font);
+        in.mouseY = float(Menu::rowTop(L2, Menu::kRowResume) + L2.rowH / 2);
+        m2.update(in, 1280, 720, font);
+        check(!m2.restartArmed(), "菜单：点了别的行就取消待命");
+
+        // 关掉菜单再打开，待命也该是干净的
+        Menu m3;
+        m3.setVisible(true);
+        in.mouseY = float(Menu::rowTop(L2, Menu::kRowRestart) + L2.rowH / 2);
+        m3.update(in, 1280, 720, font);
+        m3.setVisible(false);
+        m3.setVisible(true);
+        check(!m3.restartArmed(), "菜单：关掉再打开时待命是干净的（不会一进来点一下就清空）");
     }
 }
 
@@ -3283,7 +3363,8 @@ int main(int argc, char** argv) {
             // "脚本按得出来的"和"宣讲现场真人按得出来的"才是同一条路。
             for (const std::string& c : args.cmds) con.run(c);
             const int rc =
-                runWindow(args, win, scene, rz, con, takeShot, toast, judge, rt, settings, resIndex);
+                runWindow(args, win, scene, rz, con, takeShot, toast, judge, rt, settings, resIndex,
+                       watcher);
             // --level N 是**临时覆盖**（--help 里写着"直接站在第 N 关，不看存档"），
             // 所以它也不该往存档里写 —— 对称。
             //

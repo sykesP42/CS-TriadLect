@@ -23,7 +23,7 @@ struct MenuModel {
 
 // 这一帧用户点了什么。没有动作就是 None。
 struct MenuAction {
-    enum Kind { None, Resume, Quit, SetResolution, SetMode };
+    enum Kind { None, Resume, Quit, Restart, SetResolution, SetMode };
     Kind kind = None;
     int value = 0;  // SetResolution: 分辨率档位下标；SetMode: int(WindowMode)
 };
@@ -39,8 +39,9 @@ public:
     static constexpr int kRowGoal = 5;
     static constexpr int kRowProgress = 6;
     static constexpr int kRowBlank2 = 7;
-    static constexpr int kRowQuit = 8;
-    static constexpr int kRowCount = 9;
+    static constexpr int kRowRestart = 8;
+    static constexpr int kRowQuit = 9;
+    static constexpr int kRowCount = 10;
 
     // 面板与行的几何。抽出来是为了让**绘制和命中用同一套坐标** ——
     // 各算各的迟早会出现"看着点到了、其实没中"。
@@ -66,7 +67,12 @@ public:
     static int rowAt(float mx, float my, int fbW, int fbH, const Font& font);
 
     bool visible() const { return visible_; }
-    void setVisible(bool on) { visible_ = on; }
+    // 关掉菜单就把「从头开始」的待命撤掉：下次打开时它是干净的，
+    // 不会出现"一进菜单随手点一下就真清空了"。
+    void setVisible(bool on) {
+        visible_ = on;
+        if (!on) armedRestart_ = false;
+    }
     void setModel(const MenuModel& m) { model_ = m; }
     void setDisplay(int resIndex, WindowMode mode) {
         resIndex_ = resIndex;
@@ -74,6 +80,8 @@ public:
     }
     // 当前鼠标悬停在第几行（画高亮用）；-1 = 没悬停
     int hoverRow() const { return hoverRow_; }
+    // 「从头开始」是否已经点过一次（待命中）—— 自检要看它
+    bool restartArmed() const { return armedRestart_; }
 
     MenuAction update(const FrameInput& in, int fbW, int fbH, const Font& font);
     void draw(Framebuffer& fb, const Font& font) const;
@@ -88,6 +96,7 @@ private:
     int resIndex_ = 2;                       // 默认停在 1280x720（封顶那档）
     WindowMode mode_ = WindowMode::Windowed;
     int hoverRow_ = -1;
+    bool armedRestart_ = false;  // 「从头开始」是否已待命（见 update() 里那段）
 
     static void rect(Framebuffer& fb, int x, int y, int w, int h, Vec3 c, float alpha);
     static const char* modeLabel(WindowMode m);
@@ -167,6 +176,10 @@ inline MenuAction Menu::update(const FrameInput& in, int fbW, int fbH, const Fon
     hoverRow_ = rowAt(in.mouseX, in.mouseY, fbW, fbH, font);
     if (!in.mousePressed || hoverRow_ < 0) return act;
 
+    // 点了别的行就把「从头开始」的待命状态取消 —— 否则"点一下、去做点别的、
+    // 过一会儿又点回来"会把一次误触变成真正的清空。
+    if (hoverRow_ != kRowRestart) armedRestart_ = false;
+
     const Layout L = computeLayout(fbW, fbH, font);
     switch (hoverRow_) {
         case kRowResume:
@@ -174,6 +187,16 @@ inline MenuAction Menu::update(const FrameInput& in, int fbW, int fbH, const Fon
             break;
         case kRowQuit:
             act.kind = MenuAction::Quit;
+            break;
+        case kRowRestart:
+            // 破坏性操作，两次点击才生效：第一次只是"待命"，标签会变、变红，
+            // 第二次才真的做。一键抹掉所有改动不该是"手滑就到"的事。
+            if (armedRestart_) {
+                armedRestart_ = false;
+                act.kind = MenuAction::Restart;
+            } else {
+                armedRestart_ = true;
+            }
             break;
         case kRowResolution: {
             int prevX = 0, nextX = 0, aw = 0;
@@ -292,7 +315,18 @@ inline void Menu::draw(Framebuffer& fb, const Font& font) const {
     // 7 分隔线
     rect(fb, textX, rowTop(L, kRowBlank2) + L.rowH / 2, L.panelW - L.padX * 2, 1, dim, 0.35f);
 
-    // 8 退出游戏
+    // 8 从头开始。破坏性操作，所以：待命之后**标签会变**（说清会清掉什么、要再点一次），
+    //   颜色也从普通白变成警示色。一键抹掉所有改动不该是"手滑就到"的事。
+    {
+        const Vec3 warn{2.6f, 0.95f, 0.80f};
+        highlight(kRowRestart);
+        const char* label = armedRestart_ ? "再点一次确认：清空进度 + 还原所有改动"
+                                          : "从头开始（清空进度和文件改动）";
+        font.drawLine(fb, textX + 12, rowTop(L, kRowRestart) + L.rowH / 3, label,
+                      armedRestart_ ? warn : rowColor(kRowRestart));
+    }
+
+    // 9 退出游戏
     highlight(kRowQuit);
     font.drawLine(fb, textX + 12, rowTop(L, kRowQuit) + L.rowH / 3, "退出游戏", rowColor(kRowQuit));
 
