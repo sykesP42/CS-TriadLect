@@ -38,6 +38,16 @@ std::wstring widen(const std::string& utf8) {
     return w;
 }
 
+// UTF-16 → UTF-8：反过来那一趟，exe 路径里可能有中文（学生的下载目录很常见）
+std::string narrow(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    const int need = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), nullptr, 0, nullptr, nullptr);
+    if (need <= 0) return std::string();
+    std::string s(size_t(need), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), &s[0], need, nullptr, nullptr);
+    return s;
+}
+
 Key vkToKey(WPARAM vk) {
     switch (vk) {
         case 'W': return Key::W;
@@ -331,6 +341,21 @@ void fitWindowToScreen(int& w, int& h) {
     if (h < 360) h = 360;
 }
 
+std::string executableDir() {
+    wchar_t buf[4096];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(sizeof(buf) / sizeof(buf[0])));
+    if (n == 0 || n >= sizeof(buf) / sizeof(buf[0])) return std::string();
+    const std::wstring w(buf, n);
+    const size_t cut = w.find_last_of(L"\\/");
+    if (cut == std::wstring::npos) return std::string();
+    return narrow(w.substr(0, cut));
+}
+
+bool setCurrentDir(const std::string& dir) {
+    if (dir.empty()) return false;
+    return SetCurrentDirectoryW(widen(dir).c_str()) != 0;
+}
+
 }  // namespace dlab
 
 #else  // 非 Windows：窗口开不出来，但离屏渲染照常 —— 见 platform.h 文件头
@@ -371,6 +396,13 @@ void Window::setTitle(const std::string& title) { (void)title; }
 void fitWindowToScreen(int& w, int& h) {
     (void)w;  // 这边开不出窗口，没什么可收的
     (void)h;
+}
+
+std::string executableDir() { return std::string(); }
+
+bool setCurrentDir(const std::string& dir) {
+    (void)dir;  // 非 Windows 下不折腾工作目录，照旧要求从仓库根跑
+    return false;
 }
 
 }  // namespace dlab

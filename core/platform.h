@@ -127,4 +127,12 @@ private:
 // 等于 --width/--height，截图比对脚本指望着。
 void fitWindowToScreen(int& w, int& h);
 
+// 本程序可执行文件所在目录（末尾不带分隔符，UTF-8）。取不到时返回空串。
+// 用途：双击 exe 时工作目录会是 build/，而程序所有资源路径都是相对仓库根写的，
+// 得靠它往上找仓库根（见 game/main.cpp 的 lockToRepoRoot）。
+std::string executableDir();
+
+// 换工作目录。成功返回 true。不换目录就没法用相对路径找 assets/ 和 content/。
+bool setCurrentDir(const std::string& dir);
+
 }  // namespace dlab

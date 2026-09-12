@@ -2191,9 +2191,39 @@ int runSelfTest() {
     return 1;
 }
 
+// 程序里所有资源路径（assets/ 字模、content/、saved/）都是相对仓库根写的。
+// 从仓库根敲 `build/dreamlab.exe` 没问题，但**双击 exe** 时工作目录是 build/，
+// 于是字模整份加载不到 —— 每个字都画成实心红块（core/font.h 里 count_ == 0 那条
+// 占位路径），content/ 也全部读不到。招新页写着"拉下来就能跑"，双击是必然动作，
+// 所以这里把工作目录摆正：
+//   ① 当前目录能解开就不动 —— 脚本（build/tmp_*.py）一直是这么跑的，别改它的语义；
+//   ② 解不开就从 exe 所在目录往上找带字模的那一层，找到就切过去。
+// 找不到就什么都不做：后面各自会报"打不开"，总比乱猜一个目录强。
+void lockToRepoRoot() {
+    const char* kMarker = "assets/font/pixel12.bin";
+    if (std::FILE* f = std::fopen(kMarker, "rb")) {
+        std::fclose(f);
+        return;  // 已经在仓库根，行为与以前完全一致
+    }
+
+    std::string dir = executableDir();
+    for (int up = 0; up < 4 && !dir.empty(); ++up) {
+        std::string probe = dir + "/" + kMarker;
+        if (std::FILE* f = std::fopen(probe.c_str(), "rb")) {
+            std::fclose(f);
+            if (setCurrentDir(dir)) std::printf("[路径] 当前目录不是仓库根，已切到 %s\n", dir.c_str());
+            return;
+        }
+        const size_t cut = dir.find_last_of("/\\");
+        if (cut == std::string::npos) break;
+        dir = dir.substr(0, cut);  // 上一级
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    lockToRepoRoot();  // 必须最早：后面的字模、content/、saved/ 都靠它
     const Args args = parseArgs(argc, argv);
     if (args.help) {
         printUsage();
