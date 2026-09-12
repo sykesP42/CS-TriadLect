@@ -501,9 +501,18 @@ LevelView makeView(const World& w, const Judge& judge, const LevelStatus& st) {
 // 以前这里是"只看进度"：0% 说去终端、有进度就说"照着终端说的改"。太粗 ——
 // 进度条说"走到 40% 了"，可那 40% 是"三件事里的哪一件"？只有关卡自己答得上来，
 // 它本来就拆过判定（灯罩亮没亮 / 位置对不对 / 亮度够不够）。
-std::string nextStepFor(const Level& lv, const LevelView& view) {
-    if (lv.nextStep == nullptr) return std::string();
-    return lv.nextStep(view).text;
+std::string nextStepFor(const Level& lv, const LevelView& view, bool passed) {
+    if (lv.nextStep != nullptr) {
+        const std::string t = lv.nextStep(view).text;
+        if (!t.empty()) return t;
+    }
+    // 这一关没什么"下一步"可说了（做完了）—— **但别留一片空白**。
+    // 会走到这儿的情形：用 level 跳回一个早过了的关卡。以前那种情况下 HUD 上
+    // "下一步"那一行整个消失，人只看到一个 100% 的进度条，不知道该干嘛。
+    if (passed) {
+        return "这一关已经过了 —— 想继续玩：改 content/*.txt 自己配色，或者敲 level 换一关";
+    }
+    return std::string();
 }
 
 void drawGoalPanel(Framebuffer& fb, const Font& font, int x, int y, const GoalPanel& goal) {
@@ -690,11 +699,31 @@ void printLevelBriefing(Console& con, const LevelRuntime& rt, const World& w, co
     // 「下一步」—— 和 HUD 上那行是**同一个来源**（关卡自己算的），两处说法不会打架。
     // 为什么终端也要念：零基础的人看完题面还是不知道"我现在该干嘛"，而题面写的是
     // 整件事的做法，不是"你卡在哪一步"。这一行补的就是那个 —— 世界一变它当场就变。
-    const std::string step = nextStepFor(lv, makeView(w, judge, rt.status));
+    const std::string step = nextStepFor(lv, makeView(w, judge, rt.status), rt.status.passed());
     if (!step.empty()) {
         con.printOk("下一步：");
         con.print("  " + step);
     }
+}
+
+// 过关之后往下走：推进到下一关，并把下一关的题面念出来。到了最后一关就说"四关都过了"。
+//
+// **不喊"你过了"** —— 喊不喊是另一件事（只有"头一回过"才喊）。两处过关收尾共用它：
+// 开场就发现已经过关、和循环里当场过关。上一轮就是没共用，两条路各写了一半 ——
+// "开场那条只说一句、不推进"，人卡在已完成的房间里没有指引（实测撞到过）。
+void advanceAfterPass(Console& con, World& world, Judge& judge, LevelRuntime& rt) {
+    if (rt.index + 1 >= levelCount()) {
+        con.printOk("四关都过了 —— 整条管线你已经亲手走通一遍了。");
+        con.print("想继续玩：改 content/*.txt 自己配色，或者读 core/raster.cpp"
+                  "（那 300 行是引擎的心脏）。");
+        return;
+    }
+    rt.index += 1;
+    // 推进之后马上重判一次：题面、HUD 上的进度条都指着 rt.status，
+    // 不重判的话会有一帧"标题是下一关、进度条还是上一关的 100%"。
+    rt.status = judge.evaluate(world, levelAt(rt.index));
+    con.print("下面是下一关 —— 想重看哪一关的要求，敲 level（或走到终端按 E）。");
+    printLevelBriefing(con, rt, world, judge);
 }
 
 void runCommand(const std::string& line, Console& con, World& world, ContentWatcher& watcher,
@@ -890,7 +919,7 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
             // 那是行话里的"你懂的"，而看这块铭牌的人恰恰是最不懂的人。
             // 现在直接复用关卡自己算的"下一步"：该改哪个文件、哪个字段、改成什么，说全。
             const std::string step =
-                nextStepFor(levelAt(rt.index), makeView(world, judge, rt.status));
+                nextStepFor(levelAt(rt.index), makeView(world, judge, rt.status), rt.status.passed());
             if (step.empty()) {
                 con.print("  这一步已经做完了。");
             } else {
@@ -1132,16 +1161,9 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
     auto finishLevel = [&](const Level& lv, double now) {
         announcePass(lv, now);
         rt.goals = markLevelDone(rt.goals, rt.index);
-        if (rt.index + 1 < levelCount()) {
-            rt.index += 1;
-            // 推进之后马上重判一次：面板上的进度条、终端念的题面都指着 rt.status，
-            // 不重判的话会有一帧"标题是下一关、进度条还是上一关的 100%"。
-            rt.status = judge.evaluate(scene.world, levelAt(rt.index));
-            con.print("下面是下一关 —— 想重看哪一关的要求，敲 level（或走到终端按 E）。");
-            printLevelBriefing(con, rt, scene.world, judge);
-        } else {
-            con.print("而且这是最后一关 —— 你已经把整条管线亲手走通一遍了。");
-        }
+        // 推进 + 念下一关的题面：**和"开场就发现过关"那条路共用同一个函数**。
+        // 以前两条路各写一半（一条会推进、另一条不会），于是有了那个死角。
+        advanceAfterPass(con, scene.world, judge, rt);
     };
     if (rt.freshWin) {
         finishLevel(levelAt(rt.index), win.time());
@@ -1319,7 +1341,11 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         // 一句话给 HUD，一个实体名给渲染描边。每帧算一次 —— 世界一变它当场就跟上。
         const Level& shown = levelAt(rt.index);
         const LevelView stepView = makeView(scene.world, judge, rt.status);
-        const NextStep step = shown.nextStep != nullptr ? shown.nextStep(stepView) : NextStep{};
+        // 走 nextStepFor 而不是直接调关卡的 —— 它会兜底"这一关已经过了"那句，
+        // 不然用 level 跳回旧关卡时 HUD 上那一行会整个消失。
+        const NextStep step{nextStepFor(shown, stepView, rt.status.passed()),
+                            shown.nextStep != nullptr ? shown.nextStep(stepView).focusEntity
+                                                      : std::string()};
         const Entity* focus =
             step.focusEntity.empty() ? nullptr : scene.world.entity(step.focusEntity);
 
@@ -2270,6 +2296,42 @@ void testLevel() {
         }
     }
 
+    // ①d 过关收尾：推进到下一关 + 念下一关的题面。
+    //     这条挡的是"两条路各写一半"那一类死角 —— 开场就发现过关、和循环里当场过关，
+    //     必须走同一个函数。实测撞到过：开场那条只打印一句"你已经过了这一关"、
+    //     不推进，人停在一个已完成的房间里，题面不更新、HUD 的"下一步"是空的。
+    {
+        Console c;
+        Judge j2;
+        World w2;
+        buildWorkshop(w2);
+        LevelRuntime r;
+        r.index = 1;
+        r.status = j2.evaluate(w2, levelAt(1));
+        advanceAfterPass(c, w2, j2, r);
+        check(r.index == 2, "流程：过关收尾把人送到下一关（不再停在已完成的房间里）");
+        checkClose(r.status.progress, j2.evaluate(w2, levelAt(2)).progress, 1e-6f,
+                   "流程：推进之后 rt.status 跟着重判（面板和题面说的才是同一关）");
+        bool saidNext = false;
+        for (int i = 0; i < c.lineCount(); ++i) {
+            if (c.lineAt(i).find("下面是下一关") != std::string::npos) saidNext = true;
+        }
+        check(saidNext, "流程：过关收尾会把「下面是下一关」说出来");
+
+        // 最后一关：没有下一关可去，但要说"四关都过了"，不能留一片空白
+        Console c2;
+        LevelRuntime r2;
+        r2.index = levelCount() - 1;
+        r2.status = j2.evaluate(w2, levelAt(levelCount() - 1));
+        advanceAfterPass(c2, w2, j2, r2);
+        check(r2.index == levelCount() - 1, "流程：最后一关过了就停在那儿（本来也没有下一关）");
+        bool saidDone = false;
+        for (int i = 0; i < c2.lineCount(); ++i) {
+            if (c2.lineAt(i).find("四关都过了") != std::string::npos) saidDone = true;
+        }
+        check(saidDone, "流程：最后一关过了会说「四关都过了」，不留空白");
+    }
+
     // ② 判分跟着世界走：同一场景，把灯打开，评委机位必须更亮、进度只能升不能降。
     //    这条盯的是「判分方向没写反」——把变亮判成变暗是这一块最容易犯的错。
     const Level& lv0 = levelAt(0);
@@ -3136,18 +3198,25 @@ int main(int argc, char** argv) {
                     double(rt.status.lightLuminance));
         if (rt.status.passed()) {
             // 开场就已经过关，有两种情形，要分开：
-            //   · 存档记着"这关以前就过了"    → 平静地提一句，别再欢呼一次；
-            //   · 存档说这是头一回            → 学生多半是刚关掉游戏改完代码、重新编译
-            //     回来的。第 0 关的高光时刻就在这一下（房间亮着，而他上次看到的是全黑），
-            //     不能因为"判定发生在第 0 帧之前"就把它吞掉。
-            // 这里只立旗子、不出声："喊一声"统一由 runWindow 做 —— 那里才是玩家看得见
-            // 的地方（控制台面板 + 屏幕上的 toast），而且只喊一次，不会三个地方各喊一遍。
-            if (levelDone(rt.goals, rt.index)) {
-                con.printOk(std::string(lv.title) + "：你已经过了这一关。");
-            } else {
-                rt.freshWin = true;
-            }
+            //   · 存档说这是头一回 → 学生多半是刚关掉游戏改完代码/改完数据、回来的。
+            //     第 0 关的高光时刻就在这一下（房间亮着，而他上次看到的是全黑），
+            //     不能因为"判定发生在第 0 帧之前"就把它吞掉。这里只立旗子、不出声 ——
+            //     "喊一声"统一由 runWindow 做（那儿才是玩家看得见的地方），
+            //     而且它会顺手把人送到下一关；
+            //   · 存档记着"这关以前就过了" → 别再欢呼，但**一样得往下走**。
+            //     停在一个"已经完成"的房间里没有任何指引：题面不更新、HUD 的"下一步"
+            //     是空的（过了关的关卡不再说下一步），人只能对着一个 100% 的进度条发呆。
+            //     这个死角实测被撞到过 —— "第一关提示已经过关了，但下一关的信息始终没出现"。
+            // **先问再标记** —— 顺序反了就永远问不出"是不是头一回"
+            const bool wasDone = levelDone(rt.goals, rt.index);
             rt.goals = markLevelDone(rt.goals, rt.index);
+            if (!wasDone) {
+                rt.freshWin = true;  // 头一回：交给 runWindow 喊一声 + 推进
+            } else {
+                con.printOk(std::string(lv.title) + "：你已经过了这一关。");
+                // 早过过了：不欢呼，但**照样往下走** —— 别把人留在已完成的房间里
+                advanceAfterPass(con, scene.world, judge, rt);
+            }
         } else {
             con.print(std::string(lv.title) + " —— 目标：" + lv.goal);
             con.print("走到桌子前的终端，看着它按 E：它会告诉你该改哪个文件、改哪一行。");
@@ -3322,7 +3391,7 @@ int main(int argc, char** argv) {
             goal.progress = rt.status.progress;
             goal.passed = rt.status.passed();
             // 离屏出图也带上"下一步"（截图是拿去当素材/验收的，和玩家看到的应当一致）
-            goal.nextStep = nextStepFor(lv, makeView(scene.world, judge, rt.status));
+            goal.nextStep = nextStepFor(lv, makeView(scene.world, judge, rt.status), rt.status.passed());
             if (args.hud)
                 drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset,
                         kWindowHint, goal);

@@ -82,7 +82,12 @@ NextStep nextStepTexture(const LevelView& view) {
     if (m.filterMode != kFilterBilinear) {
         return NextStep{"最后一步：把 filter 从 nearest 改成 bilinear（远处的地板就不闪了）", ""};
     }
-    return NextStep{};
+    // 三件都对 = 这一关做完了，而它也是**最后一关**。这里不能返回空 ——
+    // 空的话 HUD 上"下一步"那一行整个消失，人对着一个 100% 的进度条就没事干了。
+    // （通用的兜底说"敲 level 换一关"，对最后一关不适用。）
+    return NextStep{"四关都过了！想继续玩：改 content/*.txt 自己配色，"
+                    "或者去读 core/raster.cpp —— 那 300 行是引擎的心脏",
+                    ""};
 }
 
 // 评委机位：站在房间这一头往下看地板 —— 这一关的主角就是地板，别的东西都只是参照。
