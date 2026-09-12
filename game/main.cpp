@@ -287,8 +287,7 @@ void syncCamera(Scene& s) {
 // 离屏 --shot 默认不给（调用方传 false）：截图是素材和逐像素比对用的，"干净"比
 // "像玩家看到的"更要紧；而且评委机位那几张对比图一旦多一圈光斑，计划文档里
 // 记录过的画面对不上号。
-void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds, bool playerGlow = false,
-                 const Entity* highlight = nullptr) {
+void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds, bool playerGlow = false) {
     (void)timeSeconds;
     Light glow;
     const Light* extra = nullptr;
@@ -301,7 +300,7 @@ void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds, bool playerG
         glow.radius = 2.2f;
         extra = &glow;
     }
-    s.world.render(rz, s.camera, extra, highlight);
+    s.world.render(rz, s.camera, extra);
 }
 
 // ---------------------------------------------------------------- 屏幕上的小提示
@@ -326,6 +325,101 @@ struct Toast {
 void blendRect(Framebuffer& fb, int x, int y, int w, int h, Vec3 color, float alpha) {
     for (int gy = 0; gy < h; ++gy)
         for (int gx = 0; gx < w; ++gx) fb.blendPixel(x + gx, y + gy, color, alpha);
+}
+
+// 画一个实心三角形（2D，像素坐标）。箭头就是它拼的。
+// 3D 的重心坐标填充都在 core/raster.cpp 里写过了，这里是它的二维特例。
+void fillTri(Framebuffer& fb, float x0, float y0, float x1, float y1, float x2, float y2, Vec3 c,
+             float alpha) {
+    const int minX = std::max(0, int(std::min({x0, x1, x2})));
+    const int maxX = std::min(fb.width - 1, int(std::max({x0, x1, x2})) + 1);
+    const int minY = std::max(0, int(std::min({y0, y1, y2})));
+    const int maxY = std::min(fb.height - 1, int(std::max({y0, y1, y2})) + 1);
+    const float d = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+    if (d > -1e-6f && d < 1e-6f) return;  // 退化成一个点或一条线
+    for (int y = minY; y <= maxY; ++y) {
+        for (int x = minX; x <= maxX; ++x) {
+            const float px = float(x) + 0.5f;
+            const float py = float(y) + 0.5f;
+            const float w0 = ((y1 - y2) * (px - x2) + (x2 - x1) * (py - y2)) / d;
+            const float w1 = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / d;
+            const float w2 = 1.0f - w0 - w1;
+            if (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f) fb.blendPixel(x, y, c, alpha);
+        }
+    }
+}
+
+// 「本关下一步要动的东西在哪儿」—— 屏幕上指个方向。
+//
+// 为什么是箭头、不是给那东西描边：描边只在东西**已经进了画面**时才有用，而第 1 关
+// 要教的恰恰是"往哪走" —— 吊灯挂在天花板上，多数时候根本不在视野里。箭头说的是
+// "往那边转"，比"这东西长这样"早一步，而且不碰任何 3D 渲染的讲究
+// （背面剔除、深度偏移那套，之前用描边时踩过）。
+//
+// 在画面里 → 在它上方顶一个小三角；出了画面 → 夹到边缘、箭头朝外，并写上名字。
+// 名字是必须的：光有个三角，零基础的人还是不知道那指的是什么。
+void drawTargetArrow(Framebuffer& fb, const Font& font, const Camera& cam, const Vec3& target,
+                     const std::string& label) {
+    const int W = fb.width;
+    const int H = fb.height;
+    if (W < 200 || H < 200) return;  // 太小就画不下了，别互相压
+
+    const Mat4 view = cam.view();
+    const Mat4 proj = perspective(cam.fovY, float(W) / float(H), 0.05f, 80.0f);
+    const Vec4 clip = proj * (view * Vec4(target, 1.0f));
+    if (clip.w <= 1e-4f) return;  // 在相机背后：这时说不了方向，先转弯再说
+
+    const float ndcX = clip.x / clip.w;
+    const float ndcY = clip.y / clip.w;
+    const Vec3 color{0.10f, 1.55f, 1.95f};  // 和终端屏幕、随身微光一个色系
+    const float alpha = 0.85f;
+
+    const int sx = int((ndcX * 0.5f + 0.5f) * float(W));
+    const int sy = int((0.5f - ndcY * 0.5f) * float(H));
+
+    if (ndcX >= -1.0f && ndcX <= 1.0f && ndcY >= -1.0f && ndcY <= 1.0f) {
+        // 已经在画面里：在它上方 30 像素顶一个朝下的小三角，别挡住东西本身
+        const float cx = float(sx);
+        const float cy = float(sy - 30);
+        fillTri(fb, cx, cy + 10.0f, cx - 9.0f, cy - 6.0f, cx + 9.0f, cy - 6.0f, color, alpha);
+        return;
+    }
+
+    // 出画面了：夹到边缘。上边留得多一点 —— 左上角是关卡目标面板，别压上去。
+    const int topMargin = 132;
+    const int edge = 46;
+    const int cx = std::min(std::max(sx, edge), W - edge);
+    const int cy = std::min(std::max(sy, topMargin), H - edge);
+
+    // 箭头朝哪边：看"超出画面"哪个方向更多（按各自半屏折算成像素再比）
+    const float overX = (std::fabs(ndcX) - 1.0f) * float(W) * 0.5f;
+    const float overY = (std::fabs(ndcY) - 1.0f) * float(H) * 0.5f;
+    if (overX > overY) {
+        if (ndcX > 0.0f) {
+            fillTri(fb, float(cx + 13), float(cy), float(cx - 4), float(cy - 10),
+                    float(cx - 4), float(cy + 10), color, alpha);  // 朝右
+        } else {
+            fillTri(fb, float(cx - 13), float(cy), float(cx + 4), float(cy - 10),
+                    float(cx + 4), float(cy + 10), color, alpha);  // 朝左
+        }
+    } else {
+        if (ndcY > 0.0f) {
+            fillTri(fb, float(cx), float(cy - 13), float(cx - 10), float(cy + 4),
+                    float(cx + 10), float(cy + 4), color, alpha);  // 朝上
+        } else {
+            fillTri(fb, float(cx), float(cy + 13), float(cx - 10), float(cy - 4),
+                    float(cx + 10), float(cy - 4), color, alpha);  // 朝下
+        }
+    }
+
+    if (!label.empty()) {
+        const int tw = font.measureLine(label);
+        const int tx = std::min(std::max(cx - tw / 2, 4), std::max(4, W - tw - 4));
+        const int ty = std::min(std::max(cy + 17, 4), std::max(4, H - font.lineHeight() - 4));
+        blendRect(fb, tx - 5, ty - 3, tw + 10, font.lineHeight() + 6, Vec3{0.02f, 0.03f, 0.05f},
+                  0.75f);
+        font.drawLine(fb, tx, ty, label, color, 1.0f);
+    }
 }
 
 // 开局那张引导卡。**写给零基础的人**。
@@ -1231,7 +1325,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
 
         // ---- 画一帧
         rz.framebuffer().clear(kClearColor);
-        renderFrame(rz, scene, float(now), true, focus);  // 开窗这一路才给随身微光 + 描边
+        renderFrame(rz, scene, float(now), true);  // 开窗这一路才给随身微光
 
         // 叠字层：HUD → 准星 → 控制台面板（后画的盖住先画的）
         const int inset = con.panelHeight(font, rz.framebuffer().width, rz.framebuffer().height);
@@ -1242,6 +1336,11 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         goal.passed = rt.status.passed();
         goal.nextStep = step.text;
         drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint, goal);
+        // 「下一步要动的东西在哪儿」—— 屏幕上指个方向。菜单开着时不画：
+        // 那时候画面被压暗了，箭头只会变成面板底下的一块噪点。
+        if (focus != nullptr && !menu.visible()) {
+            drawTargetArrow(rz.framebuffer(), font, scene.camera, focus->position, focus->name);
+        }
         // 菜单开着时不画准星：它和它的提示文字会从菜单的半透明遮罩下透出来，糊在面板中间。
         // （HUD 留着 —— 它在面板外面，被压暗之后正好当背景信息。）
         if (!menu.visible()) {

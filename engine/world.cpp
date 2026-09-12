@@ -85,8 +85,7 @@ void World::fillEnv(ShadeEnv& env, const Vec3& cameraPos) const {
     env.cameraPos = cameraPos;
 }
 
-void World::render(Rasterizer& rz, const Camera& cam, const Light* viewLight,
-                   const Entity* highlight) const {
+void World::render(Rasterizer& rz, const Camera& cam, const Light* viewLight) const {
     const int w = rz.framebuffer().width;
     const int h = rz.framebuffer().height;
     const Mat4 view = cam.view();
@@ -96,31 +95,6 @@ void World::render(Rasterizer& rz, const Camera& cam, const Light* viewLight,
     fillEnv(env, cam.position);
     env.viewLight = viewLight;
     rz.begin(view, proj, cam.position, env);
-
-    // 高亮：把目标物体放大一圈、用自发光色**先画一遍**。后画的正常场景会盖住它的
-    // 正面，只在轮廓外留下一圈亮边。它被别的东西挡住时，depth 测试也不让它露出来 ——
-    // 正好就是"看得见时才描"。
-    //
-    // 为什么要往**后**挪：这个光栅化器没有背面剔除，放大之后外壳的正面会比本体更靠近
-    // 相机、把本体整个挡掉。往后挪"放大出来的那点厚度"就解决了（外壳的后面本来就在
-    // 本体后面，不用管）。
-    if (highlight != nullptr && highlight->visible) {
-        const Bounds b = meshBounds(meshes[size_t(highlight->mesh)]);
-        const float radius = length(b.size()) * 0.5f;
-        const float grow = 0.06f;                 // 放大 6%，一圈边别太粗
-        // 注意是**加**：cam.forward() 指向屏幕里面，"往后挪"就是顺着它走。
-        // （第一版写成了减号 —— 那等于把外壳朝相机推，整个本体被青色裹住。
-        //   出图一眼就看出来了：灯变成一块实心青，而不是一圈边。）
-        const float back = radius * grow * 2.0f;  // 抵消放大带来的前凸
-        const Mat4 model = translation(highlight->position + cam.forward() * back) *
-                           rotationY(highlight->rotationY) *
-                           scaling(highlight->scale * (1.0f + grow));
-        Material shell;
-        shell.albedo = Vec3{0.0f, 0.0f, 0.0f};
-        shell.emissive = Vec3{0.15f, 1.45f, 1.85f};  // 和终端屏幕一个青亮色系
-        shell.roughness = 1.0f;
-        rz.draw(meshes[size_t(highlight->mesh)], model, shell);
-    }
 
     for (const Entity& e : entities) {
         if (!e.visible) continue;
