@@ -56,6 +56,7 @@ Key vkToKey(WPARAM vk) {
         case 'D': return Key::D;
         case 'E': return Key::E;
         case 'R': return Key::R;
+        case 'Q': return Key::Q;
         case VK_UP: return Key::Up;
         case VK_DOWN: return Key::Down;
         case VK_LEFT: return Key::Left;

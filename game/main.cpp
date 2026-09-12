@@ -21,6 +21,7 @@
 #include "../engine/mesh.h"
 #include "../engine/reload.h"
 #include "../engine/menu.h"
+#include "../engine/recruit.h"
 #include "../engine/save.h"
 #include "../engine/settings.h"
 #include "../engine/world.h"
@@ -65,6 +66,7 @@ struct Args {
     bool preview = false;                // 把字模画成终端 ASCII 图
     std::string previewText;
     bool hud = false;                    // 叠一层文字 HUD（验证中文字模进 PNG 的整条链）
+    bool qrPreview = false;              // 强行打开入群二维码覆盖层（离屏出图核对这张码用）
     int watchMs = 0;                     // >0 = 截图前先等 content 变化（离屏验证热重载）
     bool console = false;                // 显示控制台面板
     std::vector<std::string> cmds;       // --cmd：进游戏前注入的命令（可重复）
@@ -112,6 +114,7 @@ void printUsage() {
         "                     它的解答是改 kAmbientStrength 再重编译，运行时达成不了\n"
         "  --preview [文本]   把中文字模画成终端 ASCII 图（检查字模是否完好）\n"
         "  --hud              在画面上叠一层文字（验证中文渲染进 PNG）\n"
+        "  --qr-preview       强行打开入群二维码覆盖层（离屏核对这张码画得对不对）\n"
         "  --watch <毫秒>     先应用 content/，再等文件变化并重新应用，然后才截图\n"
         "                     （没有窗口也能验证「改数据 → 按 R → 世界变化」）\n"
         "  --console          显示游戏内控制台面板\n"
@@ -177,6 +180,8 @@ Args parseArgs(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-') a.previewText = argv[++i];
         } else if (s == "--hud") {
             a.hud = true;
+        } else if (s == "--qr-preview") {
+            a.qrPreview = true;
         } else if (s == "--watch") {
             a.watchMs = std::atoi(takeValue(argc, argv, i, "--watch"));
         } else if (s == "--console") {
@@ -563,6 +568,71 @@ void drawGoalPanel(Framebuffer& fb, const Font& font, int x, int y, const GoalPa
     font.drawLine(fb, x + pad + barW + 12, ty, pct, goal.passed ? barDone : dim, 1.0f, 1);
 }
 
+// 四关全通之后才解锁的那张图：入群二维码。
+//
+// 画法上只有一个讲究，但它决定这张码**能不能扫出来**：按**整数倍**放大。
+// 每格 module 正好是 N×N 个屏幕像素，格线落在像素边界上，边缘绝对干净。
+// 按任意比例缩（或者开双线性）会让格线糊在半个像素上，手机就认不出来了 ——
+// 这也是 tools/gen_recruit_qr.py 把素材存成"一格一个 bit"的全部理由。
+//
+// 黑和白都**覆盖写**（alpha = 1.0），不和背景混合：二维码靠对比度吃饭，
+// 后面那间屋子是亮是暗都不该影响它。过完色调映射大约 0 对 248。
+void drawRecruitQr(Framebuffer& fb, const Font& font, const RecruitQr& qr, bool loaded) {
+    const Vec3 ink{0.0f, 0.0f, 0.0f};
+    const Vec3 paper{2.6f, 2.6f, 2.6f};
+    const Vec3 dim{1.15f, 1.15f, 1.20f};
+    const Vec3 strong{2.6f, 2.6f, 2.7f};
+
+    for (int y = 0; y < fb.height; ++y)
+        for (int x = 0; x < fb.width; ++x) fb.blendPixel(x, y, ink, 0.88f);
+
+    const int lh = font.lineHeight();
+    const int topH = lh * 2 + 24;  // 标题那一块
+    const int botH = lh * 2 + 20;  // 底部两行说明
+    const int quiet = 4;           // 静默区：二维码规范要求四周留 4 格白边，缺了有些读取器不认
+
+    int scale = 0;
+    if (loaded) {
+        const int availW = fb.width - 48;
+        const int availH = fb.height - topH - botH;
+        const int sw = availW / (qr.modulesW + quiet * 2);
+        const int sh = availH / (qr.modulesH + quiet * 2);
+        scale = sw < sh ? sw : sh;
+        if (scale < 1) scale = 1;  // 窗口小到放不下也按"一格一个像素"画，总比不画好
+    }
+
+    auto center = [&](const std::string& s, int y, Vec3 c, int sc) {
+        font.drawLine(fb, (fb.width - font.measureLine(s) * sc) / 2, y, s, c, 1.0f, sc);
+    };
+
+    if (loaded) {
+        const int plate = (qr.modulesW + quiet * 2) * scale;
+        const int px = (fb.width - plate) / 2;
+        const int py = topH + (fb.height - topH - botH - plate) / 2;
+        for (int y = 0; y < plate; ++y)
+            for (int x = 0; x < plate; ++x) fb.setPixel(px + x, py + y, paper);
+        const int qx = px + quiet * scale;
+        const int qy = py + quiet * scale;
+        for (int r = 0; r < qr.modulesH; ++r) {
+            for (int c = 0; c < qr.modulesW; ++c) {
+                if (!qr.dark(c, r)) continue;
+                for (int dy = 0; dy < scale; ++dy)
+                    for (int dx = 0; dx < scale; ++dx)
+                        fb.setPixel(qx + c * scale + dx, qy + r * scale + dy, ink);
+            }
+        }
+        center("逐梦 26 数媒组 · 入群二维码", 26, strong, 2);
+        center("手机微信扫一扫，进数媒组的招新群", fb.height - botH + 4, dim, 1);
+        center("按 Q 或 Esc 关掉", fb.height - lh - 14, dim, 1);
+    } else {
+        // 素材没读出来：把"什么坏了、怎么修"写在脸上，别让人对着一片黑猜
+        center("入群二维码的素材没读出来", fb.height / 2 - lh * 2, strong, 2);
+        center("跑这一条重新生成：", fb.height / 2 + lh, dim, 1);
+        center("python tools/gen_recruit_qr.py --src <二维码图>", fb.height / 2 + lh * 2, dim, 1);
+        center("按 Q 或 Esc 关掉", fb.height - lh - 14, dim, 1);
+    }
+}
+
 void drawHud(Framebuffer& fb, const Font& font, float fps, int bottomInset = 0,
              const std::string& hint = "", const GoalPanel& goal = GoalPanel{}) {
     const Vec3 white{2.2f, 2.2f, 2.25f};
@@ -711,12 +781,14 @@ void printLevelBriefing(Console& con, const LevelRuntime& rt, const World& w, co
 // **不喊"你过了"** —— 喊不喊是另一件事（只有"头一回过"才喊）。两处过关收尾共用它：
 // 开场就发现已经过关、和循环里当场过关。上一轮就是没共用，两条路各写了一半 ——
 // "开场那条只说一句、不推进"，人卡在已完成的房间里没有指引（实测撞到过）。
-void advanceAfterPass(Console& con, World& world, Judge& judge, LevelRuntime& rt) {
+// 返回值 = **是不是四关全通了**。调用方靠它决定要不要放下面的入群二维码 ——
+// 这个判断只能有一个出处，散在两处迟早会有一处忘了改。
+bool advanceAfterPass(Console& con, World& world, Judge& judge, LevelRuntime& rt) {
     if (rt.index + 1 >= levelCount()) {
         con.printOk("四关都过了 —— 整条管线你已经亲手走通一遍了。");
         con.print("想继续玩：改 content/*.txt 自己配色，或者读 core/raster.cpp"
                   "（那 300 行是引擎的心脏）。");
-        return;
+        return true;
     }
     rt.index += 1;
     // 推进之后马上重判一次：题面、HUD 上的进度条都指着 rt.status，
@@ -724,10 +796,12 @@ void advanceAfterPass(Console& con, World& world, Judge& judge, LevelRuntime& rt
     rt.status = judge.evaluate(world, levelAt(rt.index));
     con.print("下面是下一关 —— 想重看哪一关的要求，敲 level（或走到终端按 E）。");
     printLevelBriefing(con, rt, world, judge);
+    return false;
 }
 
 void runCommand(const std::string& line, Console& con, World& world, ContentWatcher& watcher,
-                const std::function<void()>& takeShot, Judge& judge, LevelRuntime& rt) {
+                const std::function<void()>& takeShot, const std::function<bool()>& showRecruit,
+                Judge& judge, LevelRuntime& rt) {
     const std::vector<std::string> t = splitTokens(line);
     if (t.empty()) return;
     const std::string& cmd = t[0];
@@ -750,6 +824,7 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
         con.print("  level <关号>         跳到某一关，例如 level 0");
         con.print("  use terminal         同上（走到桌子前的终端按 E 走的就是这条命令）");
         con.print("  shot                 现在存一张干净的 PNG（不含面板）到 shots/");
+        con.print("  qr                   看入群二维码（四关全通之后才解锁）");
         con.print("小提示：改 content/*.txt 再敲 reload，比敲命令更接近「做美术」这件事。");
         return;
     }
@@ -973,6 +1048,17 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
         return;
     }
 
+    if (cmd == "qr") {
+        // 和按 Q 走**同一条路**：没通关就是没解锁，命令也不给开。
+        // 这是唯一一个"故意不听话"的开发命令 —— 留个后门等于把这个功能取消了。
+        if (!showRecruit()) {
+            con.printError("入群二维码还没解锁 —— 四关全通之后它才会开。");
+        } else {
+            con.printOk("入群二维码已打开（按 Q 或 Esc 关掉）。");
+        }
+        return;
+    }
+
     con.printError("没有这个命令：" + cmd + "（敲 help 看全部命令）");
 }
 
@@ -1117,9 +1203,18 @@ void interact(Scene& s, Console& con, Toast& toast, double now, int levelIndex) 
     con.run(e.command);
 }
 
+// 入群二维码的状态。做成一个结构体传，是因为它要跨三处用：通关那一刻解锁、
+// 主循环里按 Q 开关、以及离屏出图（--qr-preview）时核对这张码画得对不对。
+struct RecruitState {
+    RecruitQr qr;
+    bool unlocked = false;  // 四关全通之后才为真
+    bool open = false;      // 覆盖层开没开
+};
+
 // ---------------------------------------------------------------- 开窗模式
 int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Console& con,
-              const std::function<void()>& takeShot, Toast& toast, Judge& judge, LevelRuntime& rt,
+              const std::function<void()>& takeShot, const std::function<bool()>& showRecruit,
+              Toast& toast, Judge& judge, LevelRuntime& rt, RecruitState& recruit,
               Settings& settings, int& resIndex, ContentWatcher& watcher) {
     Font font;
     font.loadFromFile("assets/font/pixel12.bin");  // 失败会画红块占位，绝不白屏
@@ -1163,7 +1258,15 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         rt.goals = markLevelDone(rt.goals, rt.index);
         // 推进 + 念下一关的题面：**和"开场就发现过关"那条路共用同一个函数**。
         // 以前两条路各写一半（一条会推进、另一条不会），于是有了那个死角。
-        advanceAfterPass(con, scene.world, judge, rt);
+        if (advanceAfterPass(con, scene.world, judge, rt)) {
+            // 四关全通 = 解锁入群二维码。这是整个游戏的**结束动作**，所以它自己弹出来，
+            // 不用再让玩家去猜"刚才那一堆字里是不是有什么东西开了"。
+            recruit.unlocked = true;
+            recruit.open = true;
+            con.printOk("【入群二维码已解锁】—— 就是下面这张，手机微信扫一扫。");
+            con.print("（以后想再看：按 Q，或者走到终端敲 qr）");
+            toast.show("入群二维码已解锁", now, 6.0);
+        }
     };
     if (rt.freshWin) {
         finishLevel(levelAt(rt.index), win.time());
@@ -1207,14 +1310,19 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
 
         // 菜单/控制台开着时，不接受"点一下就抓鼠标" —— 否则点菜单的那一下会把鼠标锁走，
         // 光标跳到窗口中心，菜单就点不动了。（见 platform.h 的 setClickToCapture）
-        win.setClickToCapture(!(con.visible() || menu.visible()));
+        win.setClickToCapture(!(con.visible() || menu.visible() || recruit.open));
 
         // ---- 全局按键
         // Esc 的三级优先级：控制台 → 菜单 → 打开菜单。
         // **不再直接退出** —— 那是以前的行为，想关控制台手滑按两下，游戏就没了。
         // 退出改到菜单里主动点（见下面的 MenuAction::Quit）。
         if (pi.pressed[int(Key::Esc)]) {
-            if (con.visible()) {
+            if (recruit.open) {
+                // 二维码在最上层，Esc 先关它 —— 关掉之后回到刚才那一层（多半是控制台）。
+                // 鼠标要不要还回去，取决于下面那层是不是也要用鼠标。
+                recruit.open = false;
+                win.setMouseCaptured(!(con.visible() || menu.visible()));
+            } else if (con.visible()) {
                 con.setVisible(false);
                 win.setMouseCaptured(true);  // 刚按 Esc 的人一定在窗口里，直接回到"鼠标看视角"
             } else if (menu.visible()) {
@@ -1232,6 +1340,17 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         // 但按了要有回声：本项目的规矩是"按一下没反应"最容易让人以为程序坏了。
         if (pi.pressed[int(Key::Tilde)]) {
             toast.show("控制台要到桌子前的终端那儿开 —— 走近了按 E", now);
+        }
+        // Q = 看入群二维码。没通关时不响应，但**要有回声** ——
+        // 本项目的规矩是"按一下没反应"最容易让人以为程序坏了。
+        // 控制台开着时这个键留给打字（命令里没有 q 开头的，但规矩要一致）。
+        if (pi.pressed[int(Key::Q)] && !con.visible()) {
+            if (recruit.unlocked || args.qrPreview) {
+                recruit.open = !recruit.open;
+                win.setMouseCaptured(!recruit.open);
+            } else {
+                toast.show("入群二维码还没解锁 —— 把四关都过了它就开了", now);
+            }
         }
         if (pi.pressed[int(Key::F2)]) takeShot();
 
@@ -1273,7 +1392,8 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         // 不然敲命令/点菜单会顺手把人挪走。
         const InputState in =
             autopilot ? walkInputAt(walk, frame)
-                      : ((con.visible() || menu.visible()) ? InputState{} : fromWindowInput(pi));
+                      : ((con.visible() || menu.visible() || recruit.open) ? InputState{}
+                                                                            : fromWindowInput(pi));
         updatePlayer(scene.player, in, scene.world, dt);
         syncCamera(scene);
         if (in.interact) interact(scene, con, toast, now, rt.index);
@@ -1403,7 +1523,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint, goal);
         // 「下一步要动的东西在哪儿」—— 屏幕上指个方向。菜单开着时不画：
         // 那时候画面被压暗了，箭头只会变成面板底下的一块噪点。
-        if (focus != nullptr && !menu.visible()) {
+        if (focus != nullptr && !menu.visible() && !recruit.open) {
             drawTargetArrow(rz.framebuffer(), font, scene.camera, focus->position, focus->name);
         }
         // 菜单开着时不画准星：它和它的提示文字会从菜单的半透明遮罩下透出来，糊在面板中间。
@@ -1426,6 +1546,9 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
             }
         }
         if (menu.visible()) menu.draw(rz.framebuffer(), font);  // 最后画：盖住 HUD 和控制台
+        // 入群二维码盖在所有层之上 —— 它是通关奖励，没有别的 UI 该压住它。
+        // （下面那两处"菜单开着就不画"的准星和箭头同理，见上面的 if。）
+        if (recruit.open) drawRecruitQr(rz.framebuffer(), font, recruit.qr, recruit.qr.ready());
 
         rz.framebuffer().toRGB8Into(rgbFrame, args.exposure, true, args.threads);
         win.present(rgbFrame, rz.framebuffer().width, rz.framebuffer().height);
@@ -3045,6 +3168,120 @@ void testMenu() {
     }
 }
 
+// 入群二维码的自检。
+//
+// 重点全落在**"这张码还扫得出来吗"**上 —— 因为它出错时在程序里看不出任何异常：
+// 图照画、不报错，只是手机扫不出来。所以把"能扫"的几条硬指标在这里钉死。
+void testRecruit() {
+    RecruitQr q;
+    check(q.loadFromFile(kRecruitQrPath), "群码：素材读得出来（assets/recruit/qr.bin）");
+    if (!q.ready()) {
+        check(false, "群码：素材没读出来，后面的检查没有意义，全部跳过");
+        return;
+    }
+
+    const int n = q.modulesW;
+    check(n == q.modulesH, "群码：是正方形");
+    check(n >= 21 && n <= 177 && n % 2 == 1, "群码：模块数是合法的二维码尺寸");
+    check(int(q.bits.size()) == (n + 7) / 8 * n, "群码：数据长度和尺寸对得上");
+
+    // 三个定位角必须是标准 7×7。**这一条最有分量**：定位角摆在固定的几个位置上，
+    // 它对得上就同时说明了两件事 —— 生成脚本量出来的格网是对的，而且 XOR 密钥和
+    // 脚本那边一致（密钥错了整张点阵就是噪声，第一个定位角就对不上）。
+    static const int kFinder[7][7] = {
+        {1, 1, 1, 1, 1, 1, 1}, {1, 0, 0, 0, 0, 0, 1}, {1, 0, 1, 1, 1, 0, 1},
+        {1, 0, 1, 1, 1, 0, 1}, {1, 0, 1, 1, 1, 0, 1}, {1, 0, 0, 0, 0, 0, 1},
+        {1, 1, 1, 1, 1, 1, 1},
+    };
+    const char* kCorner[3] = {"左上", "右上", "左下"};
+    for (int k = 0; k < 3; ++k) {
+        const int ox = (k == 1) ? n - 7 : 0;
+        const int oy = (k == 2) ? n - 7 : 0;
+        bool ok = true;
+        for (int r = 0; r < 7; ++r)
+            for (int c = 0; c < 7; ++c)
+                if (q.dark(ox + c, oy + r) != (kFinder[r][c] != 0)) ok = false;
+        check(ok, (std::string("群码：") + kCorner[k] + "定位角是标准 7×7").c_str());
+    }
+
+    int darkCount = 0;
+    for (int r = 0; r < n; ++r)
+        for (int c = 0; c < n; ++c)
+            if (q.dark(c, r)) ++darkCount;
+    check(darkCount > n * n / 4 && darkCount < n * n * 3 / 4, "群码：黑白分布像一张真的二维码");
+
+    // 越界当白：drawRecruitQr 拿它当静默区（规范要求四周留 4 格白边，缺了有的读取器
+    // 认不出来）。这一条顺带钉住了"越界不许读越界内存"。
+    check(!q.dark(-1, 0) && !q.dark(0, -1) && !q.dark(n, 0) && !q.dark(0, n),
+          "群码：越界当白（静默区靠它）");
+
+    // ---- 画出来的东西
+    Font font;
+    font.loadFromFile("assets/font/pixel12.bin");
+    const Vec3 paper{2.6f, 2.6f, 2.6f};
+    Framebuffer fb;
+    fb.resize(401, 401);
+    fb.clear(Vec3{0.0f, 0.0f, 0.0f});
+    drawRecruitQr(fb, font, q, true);
+
+    // 逐行找最长的连续亮像素段 —— 托盘是画面里唯一的**实心**亮块（标题文字很窄，
+    // 抢不过它）。先求宽度，再定托盘的行范围。
+    auto longestBrightRun = [&](int y, int& start) {
+        int best = 0, run = 0, s = 0;
+        for (int x = 0; x < fb.width; ++x) {
+            const Vec3 c = fb.color[size_t(y) * size_t(fb.width) + size_t(x)];
+            if (c.x >= paper.x - 0.1f && c.y >= paper.y - 0.1f) {
+                if (run == 0) s = x;
+                if (++run > best) {
+                    best = run;
+                    start = s;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        return best;
+    };
+
+    int plate = 0, plateL = 0;
+    for (int y = 0; y < fb.height; ++y) {
+        int s = 0;
+        const int r = longestBrightRun(y, s);
+        if (r > plate) {
+            plate = r;
+            plateL = s;
+        }
+    }
+    const int unit = n + 8;  // 模块数 + 两侧各 4 格静默区
+    // **必须是整数倍** —— 不是整数倍就会出现半像素宽的格线，手机扫不出来。
+    // 这一条挡的是"谁把 scale 改成了浮点除法"。
+    check(plate > 0 && plate % unit == 0, "群码：托盘边长是（模块数 + 静默区）的整数倍");
+
+    if (plate > 0 && plate % unit == 0) {
+        int top = -1, bot = -1;
+        for (int y = 0; y < fb.height; ++y) {
+            int s = 0;
+            if (longestBrightRun(y, s) >= plate) {
+                if (top < 0) top = y;
+                bot = y;
+            }
+        }
+        check(bot - top + 1 == plate, "群码：托盘是正方形（高 = 宽）");
+        // 对比度拉满：托盘里必须**同时**有纯白和纯黑，中间调不算数 ——
+        // 手机认的就是对比度，把纸色调暗一点"看着柔和些"就足以把这张码扫废。
+        int white = 0, black = 0;
+        for (int y = top; y <= bot; ++y)
+            for (int x = plateL; x < plateL + plate; ++x) {
+                const float v = fb.color[size_t(y) * size_t(fb.width) + size_t(x)].x;
+                if (v >= paper.x - 0.1f) ++white;
+                if (v <= 0.0001f) ++black;
+            }
+        check(white > 0 && black > 0, "群码：托盘里有纯白也有纯黑（对比度拉满）");
+        // 黑格差不多占一半。太低说明点阵被写坏了（比如密钥只对上了一段）。
+        check(black > plate * plate / 8, "群码：黑格占比不低于八分之一（不是空图）");
+    }
+}
+
 // 画面设置的自检。重点全落在"坏输入不许把游戏弄打不开"上 ——
 // 一个设置文件坏了就不让人进游戏，是比没有设置更糟的事。
 void testSettings() {
@@ -3135,6 +3372,7 @@ int runSelfTest() {
     testSave();
     testSettings();
     testMenu();
+    testRecruit();
     if (g_failures == 0) {
         std::printf("[selftest] %d 项检查全部通过\n", g_checks);
         return 0;
@@ -3346,8 +3584,20 @@ int main(int argc, char** argv) {
             toast.show("写 PNG 失败，看看 shots/ 目录在不在", 0.0, 2.4);
         }
     };
+    // ---- 入群二维码：四关全通之后才解锁的东西（见 engine/recruit.h）
+    RecruitState recruit;
+    recruit.qr.loadFromFile(kRecruitQrPath);  // 读不出来会自己打印修复提示，不崩
+    recruit.open = args.qrPreview;            // --qr-preview：离屏核对这张码画得对不对
+    // 按 Q 和敲 qr 命令走的是**同一条路**。没解锁就返回 false，不给后门 ——
+    // "通关才能看"是这个功能的全部意义，留个后门等于没做。
+    auto showRecruit = [&]() -> bool {
+        if (!recruit.unlocked && !args.qrPreview) return false;
+        recruit.open = true;
+        con.setVisible(false);  // 覆盖层会盖住控制台，索性关掉，免得 Esc 关掉码又冒出个控制台
+        return true;
+    };
     con.setHandler([&](const std::string& line) {
-        runCommand(line, con, scene.world, watcher, takeShot, judge, rt);
+        runCommand(line, con, scene.world, watcher, takeShot, showRecruit, judge, rt);
     });
 
     // 窗口模式：没有 --shot 就开窗。打不开（没桌面、远程会话…）就老老实实退回离屏，
@@ -3363,8 +3613,8 @@ int main(int argc, char** argv) {
             // "脚本按得出来的"和"宣讲现场真人按得出来的"才是同一条路。
             for (const std::string& c : args.cmds) con.run(c);
             const int rc =
-                runWindow(args, win, scene, rz, con, takeShot, toast, judge, rt, settings, resIndex,
-                       watcher);
+                runWindow(args, win, scene, rz, con, takeShot, showRecruit, toast, judge, rt, recruit,
+                          settings, resIndex, watcher);
             // --level N 是**临时覆盖**（--help 里写着"直接站在第 N 关，不看存档"），
             // 所以它也不该往存档里写 —— 对称。
             //
@@ -3460,7 +3710,7 @@ int main(int argc, char** argv) {
 
         // 文字层（HUD / 控制台）是最后一步叠上去的：不进深度测试、不参与光照，
         // 但和 3D 走同一条 ACES → sRGB 出口 —— 所以 UI 的颜色也得给线性 HDR 值。
-        if (args.hud || con.visible()) {
+        if (args.hud || con.visible() || args.qrPreview) {
             // 故意不检查返回值：字模加载失败时 Font 会画红块占位（绝不白屏），
             // 修复提示已经由 loadFromFile 打到 stderr 上了。
             Font font;
@@ -3477,6 +3727,14 @@ int main(int argc, char** argv) {
                 drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset,
                         kWindowHint, goal);
             if (con.visible()) con.draw(rz.framebuffer(), font);
+            // --qr-preview：把"通关之后才看得到"的那张码也画出来，好核对画得对不对。
+            // 这里**故意不看关卡进度** —— 它是出图验证用的开关（见 --help），不是游戏里的
+            // 解锁；游戏里那条解锁的路在 runWindow，只有真把四关打完才走得到。
+            if (args.qrPreview) {
+                RecruitQr recruit;
+                recruit.loadFromFile(kRecruitQrPath);
+                drawRecruitQr(rz.framebuffer(), font, recruit, recruit.ready());
+            }
         }
 
         if (shotPath.empty()) return true;  // --all-levels 不给 --shot 时只判分，不出图

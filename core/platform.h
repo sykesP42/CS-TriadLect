@@ -25,6 +25,7 @@ enum class Key {
     D,
     E,
     R,
+    Q,         // 看入群二维码（四关全通之后才解锁，见 engine/recruit.h）
     Up,
     Down,
     Left,
