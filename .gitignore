@@ -2,6 +2,7 @@ build/
 build-cmake/
 saved/
 shots/
+tools/.cache/
 *.exe
 *.obj
 *.pdb
