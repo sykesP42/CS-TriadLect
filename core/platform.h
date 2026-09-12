@@ -118,9 +118,13 @@ private:
     FrameInput input_;
 };
 
-// 开窗模式下没显式给 --width/--height 时该开多大。默认 960x540，屏幕装不下按
-// 16:9 等比缩。960x540 是实测"4 线程还撑得住 30 帧"的最大尺寸（见 platform_win32.cpp）。
-// 离屏出图不吃这个：那边必须严格等于 --width/--height，截图比对脚本指望着。
-void defaultWindowSize(int& w, int& h);
+// 把想要的窗口尺寸收进"这块屏幕放得下"的范围（装得下就原样返回；真缩了也不小于
+// 640x360，免得标题栏被顶出桌面）。
+//
+// 注意开多大**不由这里决定**：开窗尺寸直接等于渲染分辨率（只有 --scale 才降采样），
+// 所以它是个性能参数，由 game/main.cpp 按机器并行度挑一档（见 README §7 约定⑩）。
+// 这个函数只管一件事：别开出一扇屏幕装不下的窗。离屏出图不吃它 —— 那边必须严格
+// 等于 --width/--height，截图比对脚本指望着。
+void fitWindowToScreen(int& w, int& h);
 
 }  // namespace dlab

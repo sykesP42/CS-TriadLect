@@ -82,8 +82,8 @@ void printUsage() {
         "\n"
         "用法: dreamlab [选项]\n"
         "  --shot <路径>      离屏截图输出路径（给了它就一定不开窗）\n"
-        "  --width <像素>     渲染宽度 / 窗口客户区宽度（离屏默认 480；开窗默认 960）\n"
-        "  --height <像素>    渲染高度 / 窗口客户区高度（离屏默认 270；开窗默认 540）\n"
+        "  --width <像素>     渲染宽度 / 窗口客户区宽度（离屏默认 480；开窗按核数自适应）\n"
+        "  --height <像素>    渲染高度 / 窗口客户区高度（离屏默认 270；开窗按核数自适应）\n"
         "  --scale <倍数>     按 1/N 分辨率渲染再放大铺满窗口（低配机器用 2 或 3）\n"
         "  --fpscap <帧率>    开窗锁帧（默认 60）；给 0 就不锁 —— 想看看自己机器能跑多快用它\n"
         "  --frames <帧数>    离屏：跑多少帧后出图；开窗：跑够多少帧自动退出（默认 1 / 一直跑）\n"
@@ -195,10 +195,30 @@ Args parseArgs(int argc, char** argv) {
             std::exit(2);
         }
     }
-    // 开窗又没显式给尺寸时，替它挑一个屏幕放得下、帧率也撑得住的大小。
-    // 以前这里沿用了离屏的默认值 480x270 —— 双击 exe 开出来是个邮票大的窗口，
-    // 第一课"拉下来就能跑"就卡在这儿。离屏出图不动：截图比对脚本指着精确像素数。
-    if (!a.hasShot && !a.hasWidth && !a.hasHeight) defaultWindowSize(a.width, a.height);
+    // 开窗又没显式给尺寸时，按机器并行度挑一档 —— 开窗尺寸**直接等于**渲染分辨率
+    // （只有 --scale 才降采样，而 --scale 会把中文糊掉），所以它是个性能参数，
+    // 不能随手往大了开：给 4 核学生机开 1600x900 就只有十来帧了。
+    // 档位照着实测来的（关卡 3 评委机位，ms/帧）：
+    //   960x540  : 4 线程 29.9(33帧) / 8 线程 16.6 / 32 线程 9.1
+    //   1280x720 : 4 线程 52.3(19帧) / 8 线程 28.2(35帧)
+    //   1600x900 : 8 线程 43.7       / 32 线程 19.8(51帧)
+    // 以前这里沿用了离屏的默认值 480x270 —— 双击 exe 开出来是个邮票大的窗口。
+    // 离屏出图不动：截图比对脚本指着精确的 --width/--height。
+    if (!a.hasShot && !a.hasWidth && !a.hasHeight) {
+        const int hw = a.threads > 0 ? a.threads : int(std::thread::hardware_concurrency());
+        const int cores = hw > 0 ? hw : 4;
+        if (cores >= 16) {
+            a.width = 1600;
+            a.height = 900;
+        } else if (cores >= 8) {
+            a.width = 1280;
+            a.height = 720;
+        } else {
+            a.width = 960;
+            a.height = 540;
+        }
+        fitWindowToScreen(a.width, a.height);  // 屏幕装不下再等比缩
+    }
     if (a.width < 1) a.width = 1;
     if (a.height < 1) a.height = 1;
     if (a.frames < 1) a.frames = 1;

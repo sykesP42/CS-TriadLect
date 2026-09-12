@@ -309,34 +309,26 @@ void Window::setTitle(const std::string& title) {
     if (hwnd_ != nullptr) SetWindowTextW(HWND(hwnd_), widen(title).c_str());
 }
 
-void defaultWindowSize(int& w, int& h) {
-    // 默认 960x540：这是实测"4 线程还撑得住 30 帧"的最大尺寸 —— 同样 4 线程下
-    // 1280x720 只有 19 帧，破了 P0 的"低配 30 帧"。开窗的尺寸直接等于渲染分辨率
-    // （--scale 才降采样），所以窗口给多大就得算多大的像素，不能随手往大了开。
-    int bw = 960;
-    int bh = 540;
-
+void fitWindowToScreen(int& w, int& h) {
     RECT wa = {};
-    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) {
-        const int availW = wa.right - wa.left;
-        const int availH = wa.bottom - wa.top;
-        if (availW > 0 && availH > 0) {
-            const int maxW = availW * 92 / 100;  // 留一圈边
-            const int maxH = availH * 92 / 100;  // 再留标题栏
-            if (bw > maxW || bh > maxH) {
-                // 屏幕装不下就按 16:9 等比缩，别让标题栏被顶出桌面
-                const float kx = float(maxW) / float(bw);
-                const float ky = float(maxH) / float(bh);
-                const float k = kx < ky ? kx : ky;
-                bw = int(float(bw) * k);
-                bh = int(float(bh) * k);
-                if (bw < 640) bw = 640;
-                if (bh < 360) bh = 360;
-            }
-        }
-    }
-    w = bw;
-    h = bh;
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) return;  // 问不出来就原样放行
+
+    const int availW = wa.right - wa.left;
+    const int availH = wa.bottom - wa.top;
+    if (availW <= 0 || availH <= 0) return;
+
+    const int maxW = availW * 92 / 100;  // 留一圈边
+    const int maxH = availH * 92 / 100;  // 再留标题栏
+    if (w <= maxW && h <= maxH) return;
+
+    // 装不下就按 16:9 等比缩，别让标题栏被顶出桌面
+    const float kx = float(maxW) / float(w);
+    const float ky = float(maxH) / float(h);
+    const float k = kx < ky ? kx : ky;
+    w = int(float(w) * k);
+    h = int(float(h) * k);
+    if (w < 640) w = 640;
+    if (h < 360) h = 360;
 }
 
 }  // namespace dlab
@@ -376,10 +368,9 @@ void Window::recenterMouse() {}
 double Window::time() const { return 0.0; }
 void Window::setTitle(const std::string& title) { (void)title; }
 
-void defaultWindowSize(int& w, int& h) {
-    // 这边根本开不出窗口，给个定值让调用方拿到合理的数就行
-    w = 960;
-    h = 540;
+void fitWindowToScreen(int& w, int& h) {
+    (void)w;  // 这边开不出窗口，没什么可收的
+    (void)h;
 }
 
 }  // namespace dlab
