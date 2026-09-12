@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../core/font.h"
@@ -13,7 +14,9 @@
 #include "../core/png_write.h"
 #include "../core/raster.h"
 #include "../core/texture.h"
+#include "../engine/content.h"
 #include "../engine/mesh.h"
+#include "../engine/reload.h"
 #include "../engine/world.h"
 #include "workshop.h"
 
@@ -39,6 +42,7 @@ struct Args {
     bool preview = false;                // 把字模画成终端 ASCII 图
     std::string previewText;
     bool hud = false;                    // 叠一层文字 HUD（验证中文字模进 PNG 的整条链）
+    int watchMs = 0;                     // >0 = 截图前先等 content 变化（离屏验证热重载）
     bool help = false;
 };
 
@@ -58,6 +62,8 @@ void printUsage() {
         "  --look x,y,z       相机看向的点\n"
         "  --preview [文本]   把中文字模画成终端 ASCII 图（检查字模是否完好）\n"
         "  --hud              在画面上叠一层文字（验证中文渲染进 PNG）\n"
+        "  --watch <毫秒>     先应用 content/，再等文件变化并重新应用，然后才截图\n"
+        "                     （没有窗口也能验证「改数据 → 按 R → 世界变化」）\n"
         "  --selftest         运行内置自检\n"
         "  -h, --help         显示本帮助\n");
 }
@@ -103,6 +109,8 @@ Args parseArgs(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-') a.previewText = argv[++i];
         } else if (s == "--hud") {
             a.hud = true;
+        } else if (s == "--watch") {
+            a.watchMs = std::atoi(takeValue(argc, argv, i, "--watch"));
         } else if (s == "--selftest") {
             a.selftest = true;
         } else if (s == "-h" || s == "--help") {
@@ -196,6 +204,8 @@ void checkClose(float got, float want, float tol, const char* what) {
         std::printf("[selftest] 失败: %s（期望 %.5f，实际 %.5f）\n", what, want, got);
     }
 }
+
+bool sameVec3(Vec3 a, Vec3 b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
 
 // 造一个覆盖整个 NDC 的大三角形，四个角全包住
 Mesh makeFullScreenTriangle(float z) {
@@ -537,11 +547,103 @@ void testWorld() {
     check(w.findMaterial("不存在的材质") < 0, "世界：找不到的材质返回 -1");
 }
 
+// content/*.txt 的自检。这里的重点是「报错质量」和「数据↔场景对得上号」——
+// 改数据的同学没有调试器，他唯一的反馈就是这些报错文字。
+void testContent() {
+    // ① 正常解析：注释、逗号当空格、同一行写完一个块
+    const ContentPatch good = parseContent(
+        "# 注释\n"
+        "material chrome { albedo 0.95, 0.93, 0.90  roughness 0.06  metallic 1.0 }\n"
+        "ambient 0.4 0.4 0.5\n",
+        "t.txt");
+    check(good.ok(), "content：合法输入不报错");
+    check(good.materials.size() == 1 && good.lights.empty(), "content：解析出一个材质块");
+    check(good.hasAmbient, "content：解析出 ambient");
+    if (good.materials.size() == 1) {
+        const MaterialPatch& m = good.materials[0];
+        check(m.name == "chrome", "content：材质名解析正确");
+        check(m.hasAlbedo && m.hasRoughness && m.hasMetallic && !m.hasEmissive,
+              "content：只记下文件里写了的那几项（没写的保持原值）");
+        checkClose(m.roughness, 0.06f, 1e-6f, "content：roughness 数值正确");
+        checkClose(m.albedo.z, 0.90f, 1e-6f, "content：逗号分隔的 albedo 也认");
+    }
+
+    // ② 报错必须带「文件名:行号」，且拼错的键名要给出建议
+    const ContentPatch typoField = parseContent("material x {\n    roudhness 0.5\n}\n", "content/materials.txt");
+    check(!typoField.ok(), "content：拼错字段名会报错");
+    if (!typoField.ok()) {
+        check(typoField.errors[0].find("content/materials.txt:2:") == 0, "content：报错带文件名和行号（第 2 行）");
+        check(typoField.errors[0].find("roughness") != std::string::npos, "content：报错给出正确拼写建议");
+    }
+
+    // ③ 各种写坏的写法：都要报错，且不能崩
+    check(!parseContent("material a { albedo 1 1 }\n", "t").ok(), "content：数字个数不对会报错");
+    check(!parseContent("material a { metallic nan }\n", "t").ok(), "content：nan 被拒绝（否则渲染出满屏雪花）");
+    check(!parseContent("material a {\n albedo 1 1 1\n", "t").ok(), "content：块没闭合会报错");
+    check(!parseContent("}\n", "t").ok(), "content：多出来的 } 会报错");
+    check(!parseContent("metarial a { }\n", "t").ok(), "content：顶层关键字拼错会报错");
+    check(!parseContent("material {\n}\n", "t").ok(), "content：material 后面缺名字会报错");
+    check(!parseContent("material a albedo 1 1 1\n", "t").ok(), "content：缺 { 会报错");
+
+    // 少写一个数字时，报错要「少而准」——不能把下一行的 roughness 也当成 albedo 的数
+    const ContentPatch shortNums = parseContent("material a {\n albedo 0.5 0.5\n roughness 0.3\n}\n", "t");
+    check(shortNums.errors.size() == 1, "content：少写一个数只报一处错（没连累下一行）");
+    if (!shortNums.ok()) check(shortNums.errors[0].find("albedo") != std::string::npos, "content：报错指到出问题的那个字段");
+
+    // ④ 应用到世界：值真的改了
+    World w;
+    buildWorkshop(w);
+    const int chrome = w.findMaterial("chrome");
+    const ContentPatch edit = parseContent("material chrome { roughness 0.99 }\nlight 0 { intensity 7 }\n", "t");
+    std::vector<std::string> log;
+    ApplyStats st = applyContent(w, edit, &log);
+    check(st.materials == 1 && st.lights == 1, "content：应用了一项材质和一项灯");
+    check(log.empty(), "content：合法数据应用时没有任何警告");
+    checkClose(w.materials[size_t(chrome)].roughness, 0.99f, 1e-6f, "content：改材质真的落到世界上");
+    checkClose(w.lights[0].intensity, 7.0f, 1e-6f, "content：改灯真的落到世界上");
+
+    // ⑤ 名字写错：不能崩、不能误改，还要把可用的名字列出来
+    const ContentPatch typoName = parseContent("material 镜面球 { roughness 0.5 }\n", "t");
+    std::vector<std::string> log2;
+    st = applyContent(w, typoName, &log2);
+    check(st.missing == 1 && st.materials == 0, "content：世界里没有的材质名记为「没对上号」");
+    check(log2.size() == 1 && log2[0].find("chrome") != std::string::npos, "content：名字写错时列出可用的材质名");
+    checkClose(w.materials[size_t(chrome)].roughness, 0.99f, 1e-6f, "content：名字写错不会误改到别的材质");
+
+    // ⑥ 仓库里真正的那两个数据文件：语法必须干净，而且每一项都要在场景里对得上号。
+    //    否则学生看到的就是「改了没反应」，而原因只是一条没人看的警告。
+    World w2;
+    buildWorkshop(w2);
+    std::vector<std::string> log3;
+    const Material before = w2.materials[size_t(chrome)];
+    for (const std::string& file : contentFileList()) {
+        const ContentPatch p = loadContentFile(file);
+        check(p.ok(), (std::string("content：仓库里的 ") + file + " 没有语法错误").c_str());
+        if (!p.ok()) {
+            std::printf("[selftest]   %s\n", p.errors[0].c_str());
+            continue;
+        }
+        applyContent(w2, p, &log3);
+    }
+    for (const std::string& line : log3) std::printf("[selftest]   %s\n", line.c_str());
+    check(log3.empty(), "content：仓库里的数据和场景完全对得上（没有哪一项被跳过）");
+
+    // ⑦ 数据文件必须和代码里的默认值一致：改代码忘了改数据（或反过来），
+    //    症状是「按 R 前后画面突然跳一下」，极难排查，所以在自检里直接盯死。
+    const Material after = w2.materials[size_t(w2.findMaterial("chrome"))];
+    check(sameVec3(before.albedo, after.albedo) && sameVec3(before.emissive, after.emissive) &&
+              before.roughness == after.roughness && before.metallic == after.metallic,
+          "content：content/materials.txt 与代码默认值一致（chrome）");
+    checkClose(w2.ambient.x, 0.42f, 1e-5f, "content：content/lighting.txt 与代码默认值一致（ambient）");
+    checkClose(w2.lights[0].intensity, 48.0f, 1e-5f, "content：content/lighting.txt 与代码默认值一致（主光强度）");
+}
+
 int runSelfTest() {
     testMath();
     testRasterizer();
     testFont();
     testWorld();
+    testContent();
     if (g_failures == 0) {
         std::printf("[selftest] %d 项检查全部通过\n", g_checks);
         return 0;
@@ -567,6 +669,28 @@ int main(int argc, char** argv) {
     if (args.hasCam) scene.camera.position = args.cam;
     if (args.hasLook) lookAtPoint(scene.camera, args.look);
     if (args.fovDeg > 0.0f) scene.camera.fovY = radians(args.fovDeg);
+
+    // content/ 是世界的「最后一句话」：先搭场景，再让数据覆盖上去。
+    // 这样不管谁（关卡代码、玩家、上一局留下的状态）把值改成了什么，只要文件里写着，
+    // 画面出来就一定是文件说的样子 —— 「改数据一定生效」是数据热重载的全部承诺。
+    ContentWatcher watcher(contentFileList());
+    watcher.prime(scene.world);
+
+    // --watch：没有窗口也能验证热重载。先应用一次 content，然后最多等 N 毫秒，
+    // 等到文件内容变化就重新应用，再走正常渲染出图 —— 和游戏里按 R 是同一条代码路径。
+    if (args.watchMs > 0) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(args.watchMs);
+        bool got = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!watcher.poll(scene.world).empty()) {
+                got = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        std::printf("[reload] %s（轮询 %d 次）\n",
+                    got ? "content 有变化，已重新应用" : "等待超时，content 没有变化", watcher.polls());
+    }
 
     Rasterizer rz(args.threads);
     rz.resize(args.width, args.height);
