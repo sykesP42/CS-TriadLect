@@ -382,6 +382,20 @@ struct GoalPanel {
 // 也不用给每关每阶段维护一份文案。
 // 为什么需要它：零基础的人看着"目标：让房间重新亮起来"是不知道该动什么的 ——
 // 目标说的是"终态"，不是"下一个动作"。这一行补的就是那个动作。
+// 把**客户区**坐标换算到 **framebuffer** 坐标。
+//
+// 为什么需要它：鼠标坐标是客户区的，而菜单（和所有 UI）画在 framebuffer 上。
+// 平时这两者相等（窗口尺寸 = 渲染分辨率），一但窗口被拉大 —— 最大化、拖边框、
+// 或者 `--scale` 让推屏把画面放大铺满 —— 就不是一回事了。拿客户区坐标直接去和
+// framebuffer 上的矩形比，只有左上角那一块能点中，看着就是"菜单大部分按不了"。
+//
+// 抽成纯函数是为了能自检：这条逻辑本身是纯算术，不该靠"开个窗点一下"来验。
+void mouseToFramebuffer(float& mx, float& my, int clientW, int clientH, int fbW, int fbH) {
+    if (clientW <= 0 || clientH <= 0 || fbW <= 0 || fbH <= 0) return;
+    mx *= float(fbW) / float(clientW);
+    my *= float(fbH) / float(clientH);
+}
+
 std::string nextStepText(float progress) {
     if (progress >= 1.0f) return std::string();  // 过了就没什么下一步了
     if (progress <= 0.0f) return "走到桌子前的终端，看着它按 E";
@@ -1115,8 +1129,16 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
             menu.setModel(MenuModel{lvNow.title, lvNow.goal, progressPercent(rt.status),
                                     rt.status.passed()});
             menu.setDisplay(resIndex, settings.mode);
+
+            // 鼠标坐标是**客户区**的，而菜单画在 **framebuffer** 上 —— 窗口一被拉大
+            // （最大化、或者 --scale 之后推屏会把画面放大铺满），这两套坐标就不是一回事了：
+            // 拿客户区坐标去和 framebuffer 上的矩形比，只有左上角那一块能点中，
+            // 看着就是"菜单大部分按不了"。这里把鼠标换算到 framebuffer 坐标系再交进去。
+            FrameInput menuIn = pi;
+            mouseToFramebuffer(menuIn.mouseX, menuIn.mouseY, win.width(), win.height(),
+                               rz.framebuffer().width, rz.framebuffer().height);
             const MenuAction act =
-                menu.update(pi, rz.framebuffer().width, rz.framebuffer().height, font);
+                menu.update(menuIn, rz.framebuffer().width, rz.framebuffer().height, font);
 
             if (act.kind == MenuAction::Quit) break;  // 走正常退出路径（退出时会写存档）
             if (act.kind == MenuAction::Resume) {
@@ -2633,6 +2655,40 @@ void testMenu() {
         Menu m;
         m.setVisible(false);
         check(m.update(in, fbW, fbH, font).kind == MenuAction::None, "菜单：关着的时候点了没反应");
+    }
+
+    // ⑩ 鼠标坐标换算。鼠标是**客户区**坐标，菜单画在 **framebuffer** 上 ——
+    //    窗口一被拉大（最大化）或 --scale，这两套就不是一回事了。不换算的话只有
+    //    左上角那一块能点中，看着就是"菜单大部分按不了"（实测报过这个）。
+    //    这条是纯算术，所以在自检里钉住，不靠开窗点。
+    {
+        // 最大化：客户区 2560x1369（渲染还是 1280x720）。(1280,944) 换算后应落在
+        // 「退出游戏」那一行（framebuffer 坐标约 496）。
+        float mx = 1280.0f;
+        float my = 944.0f;
+        mouseToFramebuffer(mx, my, 2560, 1369, 1280, 720);
+        checkClose(mx, 640.0f, 0.5f, "菜单：客户区 X 坐标换算到 framebuffer");
+        checkClose(my, 496.5f, 1.0f, "菜单：客户区 Y 坐标换算到 framebuffer");
+
+        FrameInput in;
+        in.mousePressed = true;
+        in.mouseX = mx;
+        in.mouseY = my;
+        Menu m;
+        m.setVisible(true);
+        check(m.update(in, 1280, 720, font).kind == MenuAction::Quit,
+              "菜单：最大化窗口下点「退出游戏」能命中（先换算再判）");
+
+        // 窗口尺寸和渲染分辨率相同时，坐标应当原样不动
+        float sx = 640.0f, sy = 497.0f;
+        mouseToFramebuffer(sx, sy, 1280, 720, 1280, 720);
+        checkClose(sx, 640.0f, 0.01f, "菜单：窗口尺寸等于渲染分辨率时坐标不动");
+
+        // 退化输入（客户区还没量到 / 为 0）不许除零
+        float zx = 5.0f, zy = 7.0f;
+        mouseToFramebuffer(zx, zy, 0, 0, 1280, 720);
+        checkClose(zx, 5.0f, 0.01f, "菜单：客户区尺寸为 0 时坐标不动（不除零）");
+        checkClose(zy, 7.0f, 0.01f, "菜单：客户区尺寸为 0 时 Y 也不动");
     }
 }
 
