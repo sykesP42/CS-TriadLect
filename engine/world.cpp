@@ -85,7 +85,7 @@ void World::fillEnv(ShadeEnv& env, const Vec3& cameraPos) const {
     env.cameraPos = cameraPos;
 }
 
-void World::render(Rasterizer& rz, const Camera& cam) const {
+void World::render(Rasterizer& rz, const Camera& cam, const Light* viewLight) const {
     const int w = rz.framebuffer().width;
     const int h = rz.framebuffer().height;
     const Mat4 view = cam.view();
@@ -93,6 +93,7 @@ void World::render(Rasterizer& rz, const Camera& cam) const {
 
     ShadeEnv env;
     fillEnv(env, cam.position);
+    env.viewLight = viewLight;
     rz.begin(view, proj, cam.position, env);
 
     for (const Entity& e : entities) {

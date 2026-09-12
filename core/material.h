@@ -61,6 +61,13 @@ struct ShadeEnv {
     const Light* lights = nullptr;
     int lightCount = 0;
     Vec3 cameraPos{0.0f, 0.0f, 0.0f};
+
+    // 只进"玩家画面"的一盏补光（跟着相机走的小范围微光），主灯表之外单独算。
+    // 为什么不塞进 lights 里：评委（Judge::evaluate）走的是 World::render 的同一条
+    // 路，多一盏灯就会把四关的标定垫高 —— 关卡 1 的"灯贡献"是 0.2005 对 0.1650，
+    // 关卡 0 的出厂亮度是精确的 0.0000，都经不起多一盏。所以评委那条路上它始终是
+    // nullptr（见 game/level_registry.cpp），只有 game/main.cpp 画玩家那一帧才设。
+    const Light* viewLight = nullptr;
 };
 
 }  // namespace dlab

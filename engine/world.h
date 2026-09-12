@@ -82,7 +82,10 @@ public:
     void fillEnv(ShadeEnv& env, const Vec3& cameraPos) const;
 
     // 整个场景画一帧（不 clear，也不做色调映射 —— 那是调用方的事）
-    void render(Rasterizer& rz, const Camera& cam) const;
+    //
+    // viewLight 是"只画给玩家看"的一盏补光（随身微光），默认不给。
+    // 评委拍照（Judge::evaluate）必须是默认值 —— 多一盏灯就会把四关的标定垫高。
+    void render(Rasterizer& rz, const Camera& cam, const Light* viewLight = nullptr) const;
 
     // 相机能不能站在这里（用于出生点校验和关卡提示）
     bool overlapsSolid(const Vec3& point, float radius) const;

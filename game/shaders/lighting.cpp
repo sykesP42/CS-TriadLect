@@ -104,16 +104,16 @@ Vec3 shadeSurface(const Surface& surface, const ShadeEnv& env) {
     result += (kdEnv * albedo * diffuseEnv + specBlur * fEnv) * ambientAmount;
 
     // ---- 逐灯累加 ----
-    for (int i = 0; i < env.lightCount; ++i) {
-        const Light& light = env.lights[i];
+    // 抽成一个小函数，是因为下面那盏"随身补光"要走一模一样的算式。
+    auto addLight = [&](const Light& light) {
         const Vec3 toLight = light.position - surface.position;
         const float dist2 = dot(toLight, toLight);
         const float dist = std::sqrt(dist2);
-        if (dist < 1e-5f) continue;
+        if (dist < 1e-5f) return;
 
         const Vec3 L = toLight / dist;
         const float nDotL = dot(N, L);
-        if (nDotL <= 0.0f) continue;  // 背对着灯，不用算
+        if (nDotL <= 0.0f) return;  // 背对着灯，不用算
 
         const Vec3 H = normalize(L + V);
         const float nDotH = maxf(dot(N, H), 0.0f);
@@ -133,6 +133,20 @@ Vec3 shadeSurface(const Surface& surface, const ShadeEnv& env) {
         const float attenuation = light.intensity / (dist2 + light.radius);
 
         result += (diffuse + specular) * light.color * (nDotL * attenuation);
+    };
+
+    for (int i = 0; i < env.lightCount; ++i) {
+        // 关着的灯（intensity 0）直接跳过：衰减里乘的就是它，算出来恒等于 0，
+        // 画面一模一样，但白算一整套 PBR。出厂状态下屋子里的灯全是关的，
+        // 这一条省掉的是"每个像素对着几盏关着的灯做完整光照"。
+        if (env.lights[i].intensity <= 0.0f) continue;
+        addLight(env.lights[i]);
+    }
+
+    // 玩家随身的那点微光。评委拍照时这个指针是空的（见 core/material.h 的说明）——
+    // 它只负责让"全黑的屋子"里看得见脚下的路，不参与任何一关的判分。
+    if (env.viewLight != nullptr && env.viewLight->intensity > 0.0f) {
+        addLight(*env.viewLight);
     }
 
     return result;  // 线性空间 HDR —— 后面统一做曝光 + 色调映射

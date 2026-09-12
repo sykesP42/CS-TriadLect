@@ -259,9 +259,29 @@ void syncCamera(Scene& s) {
 }
 
 // 每帧把整场景重新提交一次（P0 不做场景图缓存，先把管线跑通）
-void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds) {
+//
+// playerGlow：玩家随身的一点微光，跟着眼睛走。只负责一件事 —— 让"全黑的屋子"
+// 里看得见脚下的路（第 0 关开局四周纯黑，不然人不知道该往哪走，也不知道自己在动）。
+// 它**不进评委画面**：Judge::evaluate 走 render() 时不传这一盏，所以第 0 关的出厂
+// 亮度仍然是精确的 0.0000、第 1 关的"灯贡献"仍然是 0.2005 对 0.1650。
+//
+// 离屏 --shot 默认不给（调用方传 false）：截图是素材和逐像素比对用的，"干净"比
+// "像玩家看到的"更要紧；而且评委机位那几张对比图一旦多一圈光斑，计划文档里
+// 记录过的画面对不上号。
+void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds, bool playerGlow = false) {
     (void)timeSeconds;
-    s.world.render(rz, s.camera);
+    Light glow;
+    const Light* extra = nullptr;
+    if (playerGlow) {
+        // 强度和半径是照着实拍对比图定的：再亮一档（intensity 5.5 / radius 3.0）
+        // 桌椅展台是更清楚了，但"这屋子是黑的"这个前提就淡了，第 0 关过关时的反差也跟着变小。
+        glow.position = s.camera.position;
+        glow.color = Vec3{1.00f, 0.95f, 0.88f};
+        glow.intensity = 2.2f;
+        glow.radius = 2.2f;
+        extra = &glow;
+    }
+    s.world.render(rz, s.camera, extra);
 }
 
 // ---------------------------------------------------------------- 屏幕上的小提示
@@ -947,7 +967,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
 
         // ---- 画一帧
         rz.framebuffer().clear(kClearColor);
-        renderFrame(rz, scene, float(now));
+        renderFrame(rz, scene, float(now), true);  // 开窗这一路才给随身微光
 
         // 叠字层：HUD → 准星 → 控制台面板（后画的盖住先画的）
         // 面板上的那一关要重新取一次：上面那段可能刚把 rt.index 推到下一关，
