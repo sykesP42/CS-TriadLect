@@ -198,10 +198,13 @@ Args parseArgs(int argc, char** argv) {
     // 开窗又没显式给尺寸时，按机器并行度挑一档 —— 开窗尺寸**直接等于**渲染分辨率
     // （只有 --scale 才降采样，而 --scale 会把中文糊掉），所以它是个性能参数，
     // 不能随手往大了开：给 4 核学生机开 1600x900 就只有十来帧了。
-    // 档位照着实测来的（关卡 3 评委机位，ms/帧）：
-    //   960x540  : 4 线程 29.9(33帧) / 8 线程 16.6 / 32 线程 9.1
-    //   1280x720 : 4 线程 52.3(19帧) / 8 线程 28.2(35帧)
-    //   1600x900 : 8 线程 43.7       / 32 线程 19.8(51帧)
+    //
+    // 档位照**真实开窗**的实测帧率定的（含推屏 present，含随身补光；4/8 线程是
+    // --threads 模拟低配，32 核是开发机）。注意：**离屏的 --shot 数字不能用来定这个**，
+    // 它不含推屏那一步，比真实开窗好看两倍多 —— 这个坑 2026-09-12 真踩过，见 README 约定⑩。
+    //   960x540  : 4 线程 36 帧 / 8 线程 56 帧 / 32 核 57 帧   ← 唯一稳过 30 帧的底档
+    //   1280x720 : 8 线程 37 帧            / 32 核 46 帧
+    //   1600x900 : 8 线程 24 帧           / 32 核 41 帧
     // 以前这里沿用了离屏的默认值 480x270 —— 双击 exe 开出来是个邮票大的窗口。
     // 离屏出图不动：截图比对脚本指着精确的 --width/--height。
     if (!a.hasShot && !a.hasWidth && !a.hasHeight) {
@@ -871,6 +874,10 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
     const double kFrameBudget = args.fpsCap > 0 ? 1.0 / double(args.fpsCap) : 0.0;
     auto prevFrameStart = std::chrono::steady_clock::now();
 
+    // 推屏用的 RGB8 缓冲，常驻复用 —— 每帧新建一个 1600x900 的 vector 就是每帧
+    // 白送一次 4.3MB 的 malloc/free（见 core/framebuffer.h 的 toRGB8Into）。
+    std::vector<uint8_t> rgbFrame;
+
     while (win.pump()) {
         const auto frameStart = std::chrono::steady_clock::now();
         // 上一帧到这一帧的间隔（帧率就是它的倒数）。和 work 一起看，
@@ -986,8 +993,8 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
                       toast.alive(now) ? toast.text : std::string());
         if (con.visible()) con.draw(rz.framebuffer(), font);
 
-        win.present(rz.framebuffer().toRGB8(args.exposure, true), rz.framebuffer().width,
-                    rz.framebuffer().height);
+        rz.framebuffer().toRGB8Into(rgbFrame, args.exposure, true, args.threads);
+        win.present(rgbFrame, rz.framebuffer().width, rz.framebuffer().height);
         win.endFrame();
 
         // 这一帧从起床到贴完屏幕一共花了多少毫秒。放在 --trace 里是因为
