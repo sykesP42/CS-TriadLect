@@ -687,7 +687,7 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
             con.printOk("展板 · 数媒组");
             con.print("实时渲染 / 三维建模 / 材质光照 / 动效 / 交互装置 —— 就是数媒组每天在做的事。");
             con.print("你手上跑的这个程序是一份活样本：它一个第三方库都没用，光栅化、着色、");
-            con.print("中文字模、PNG 编码全是这个仓库里自己写的 C++，六千多行。");
+            con.print("中文字模、PNG 编码全是这个仓库里自己写的 C++，九千多行。");
             con.print("想改它：敲 level 看这一关要什么，然后改 content/*.txt，存盘按 R。");
             return;
         }
