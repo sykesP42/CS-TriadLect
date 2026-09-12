@@ -2470,7 +2470,10 @@ void testLevel() {
         LevelRuntime r;
         r.index = 1;
         r.status = j2.evaluate(w2, levelAt(1));
-        advanceAfterPass(c, w2, j2, r);
+        // 返回值就是"四关全通了没有"—— 入群二维码的解锁条件。这条不能散在别处：
+        // 它错了的表现是"码该开的时候没开"，而那种错在自检里本来是看不出来的。
+        check(!advanceAfterPass(c, w2, j2, r),
+              "流程：还没到最后关，返回值 false（群码不该解锁）");
         check(r.index == 2, "流程：过关收尾把人送到下一关（不再停在已完成的房间里）");
         checkClose(r.status.progress, j2.evaluate(w2, levelAt(2)).progress, 1e-6f,
                    "流程：推进之后 rt.status 跟着重判（面板和题面说的才是同一关）");
@@ -2485,7 +2488,8 @@ void testLevel() {
         LevelRuntime r2;
         r2.index = levelCount() - 1;
         r2.status = j2.evaluate(w2, levelAt(levelCount() - 1));
-        advanceAfterPass(c2, w2, j2, r2);
+        check(advanceAfterPass(c2, w2, j2, r2),
+              "流程：过了最后一关，返回值 true（入群二维码就是靠它解锁的）");
         check(r2.index == levelCount() - 1, "流程：最后一关过了就停在那儿（本来也没有下一关）");
         bool saidDone = false;
         for (int i = 0; i < c2.lineCount(); ++i) {
