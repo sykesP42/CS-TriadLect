@@ -16,10 +16,14 @@
 ## 三条命令
 
 ```bash
-git clone <仓库地址> && cd dreamlab-rt
+git clone -b digitalmedia https://github.com/sykesP42/CS-TriadLect.git dreamlab-rt && cd dreamlab-rt
 ./build.bat                        # Windows。Linux / macOS 用 ./build.sh
 build\dreamlab.exe                 # 开玩（也可以双击 run.bat）
 ```
+
+> **`-b digitalmedia` 不能省。** 这个仓库里还放着别的分支（通识课的内容），
+> 默认分支不是这一个 —— 不加的话拉下来的是那门课，不是这个游戏。
+> 末尾的 `dreamlab-rt` 是给克隆下来的文件夹起个名字，后面那条 `cd dreamlab-rt` 才成立。
 
 需要 **Visual Studio 2022**（社区版就够，装「使用 C++ 的桌面开发」）或 **MinGW g++**。
 **没有别的依赖**：不用 GPU、不用引擎、不用包管理器、不用联网。
