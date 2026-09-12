@@ -1,0 +1,100 @@
+// ============================================================================
+//  关卡 —— 这个项目的"课程表"
+// ----------------------------------------------------------------------------
+//  一关 = 一句"你现在该干什么" + 一台固定的评委相机 + 一个打分函数。
+//
+//  判定为什么不看玩家眼前的画面？因为那样的话"看着屏幕就过关、转过身就掉回
+//  0%"—— 判定必须和玩家站在哪、朝哪看完全无关。所以每一关自带一台评委相机
+//  （judge），引擎用它拍一张小图，把这张图交给这一关的打分函数。
+//
+//  一关自己住在 game/levels/ 下的一个文件里：改关卡 = 改那一个文件。
+//  这里只写"关卡长什么样"，不写任何一关的具体内容。
+// ============================================================================
+#pragma once
+
+#include <cstdint>
+#include <string>
+
+#include "../core/framebuffer.h"
+#include "../core/raster.h"
+#include "../engine/world.h"
+
+namespace dlab {
+
+// 评委相机拍完照，交到关卡手里的东西。
+struct LevelView {
+    const World& world;        // 此刻的世界：灯亮不亮、材质什么样，数据都在这里
+    const Framebuffer& frame;  // 评委机位看到的那张小图 —— 想量哪个角落自己量
+    float luminance;           // frame 的平均亮度（上一条最常用的那个数）
+};
+
+// 一关。全是"描述"，没有一个字是"流程"—— 流程在 main.cpp 里。
+struct Level {
+    const char* id = "";                          // "dark"：--level 和存档记的是它，不是中文标题
+    const char* title = "";                       // "第 0 关 · 黑暗"
+    const char* goal = "";                        // HUD 上那一行
+    const char* hint = "";                        // 走到终端按 E，终端把这段话念给你听
+    Camera judge;                                 // 评委机位
+    float (*progress)(const LevelView&) = nullptr;  // 0 = 刚进门，1 = 过关
+};
+
+// 一次判定的结果
+struct LevelStatus {
+    float progress = 0.0f;
+    float luminance = 0.0f;
+    bool passed() const { return progress >= 1.0f; }
+};
+
+// 进度条上写的那个百分数。规矩只有一条，但必须钉死：
+//   屏幕上写着「100%」的那一刻，= 真的过关了。反过来也一样。
+// 为什么值得单独写个函数：显示是四舍五入（99.9% 会写成 100%），而过关是硬判
+// （progress 得真到 1.0）。不把这两个口径对齐，就会出现「它说我 100% 了，却不
+// 给我过关」—— 这不是小毛病，这是学生整个下午白干。
+inline int progressPercent(const LevelStatus& st) {
+    if (st.passed()) return 100;
+    const int pct = int(st.progress * 100.0f + 0.5f);
+    return pct >= 100 ? 99 : pct;  // 差一点点过关 → 老实写 99%，别替它宣布成功
+}
+
+// 这一局正在第几关 + 上一次判定是什么。main.cpp 每帧更新一次，
+// 命令解释器和 HUD 都从它取数 —— 保证"屏幕上的进度"和"命令查到的进度"是同一个。
+struct LevelRuntime {
+    int index = 0;
+    LevelStatus status;
+    uint32_t goals = 0;      // 位掩码：第 i 位 = 第 i 关以前就过了（从存档里带回来的）
+    bool freshWin = false;   // 一进门就已经过关，但存档说这是头一回 —— 该补喊一声"你过了"
+};
+
+// 存档里那个位掩码的读和写。移位超过 31 位在 C++ 里是未定义行为（不是"结果是 0"），
+// 所以下标一律先夹进合法范围 —— 将来关卡加到第 32 关，这里也不会悄悄写出个 UB。
+constexpr int kMaxTrackedLevels = 32;
+inline bool levelDone(uint32_t goals, int index) {
+    return index >= 0 && index < kMaxTrackedLevels && (goals & (1u << index)) != 0;
+}
+inline uint32_t markLevelDone(uint32_t goals, int index) {
+    return index >= 0 && index < kMaxTrackedLevels ? (goals | (1u << index)) : goals;
+}
+
+// 评委小图的尺寸。判定只要一个数，所以用不着全分辨率：
+// 96x54 和 640x360 量出来的平均亮度实测差不到 0.5%，代价却只是一个零头。
+constexpr int kJudgeWidth = 96;
+constexpr int kJudgeHeight = 54;
+
+// 评委机位。不跟玩家走，也不参与玩家的画面 —— 它只负责"替关卡看一眼世界"。
+class Judge {
+public:
+    LevelStatus evaluate(const World& world, const Level& lv);
+    const Framebuffer& frame() const { return rz_.framebuffer(); }
+
+private:
+    Rasterizer rz_{4};  // 小图，4 个线程够用；主渲染还在抢核，别再添乱
+};
+
+int levelCount();
+const Level& levelAt(int index);       // 越界的下标会被夹到合法范围里
+int findLevel(const std::string& id);  // 找不到返回 -1
+
+// 每一关实现在 game/levels/ 下，在这里认个脸
+const Level& levelDark();  // 第 0 关「黑暗」
+
+}  // namespace dlab

@@ -31,8 +31,13 @@ namespace dlab {
 //    · env.ambient 来自 content/ 下的数据文件 —— 存盘按 R 立刻生效，不用编译；
 //    · kAmbientStrength 是你正在读的这个 C++ 文件 —— 改完要重新编译。
 //  这就是"美术调参"和"引擎改代码"的分工。
+//
+//  TODO(第 0 关「黑暗」)：现在它是 0.0f，所以整个房间是黑的 —— 这就是出生时
+//  你看到的那片黑暗的来源。把它改成一个大于 0 的数（先试试 0.6f），
+//  存盘 → 关掉游戏 → 重新运行 build.bat → 再进来（你还站在原来的位置，
+//  存档会把你放回去）。房间亮起来的那一刻，第 0 关就过了。
 // ============================================================================
-constexpr float kAmbientStrength = 1.0f;
+constexpr float kAmbientStrength = 0.0f;
 
 // 菲涅尔：视线越"擦着"表面，反射越强（所以金属边缘总是更亮）
 static Vec3 fresnelSchlick(float cosTheta, Vec3 f0) {

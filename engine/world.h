@@ -33,6 +33,15 @@ struct Camera {
     Mat4 view() const { return lookAt(position, position + forward(), Vec3{0.0f, 1.0f, 0.0f}); }
 };
 
+// 按"站在 eye、看向 target"摆一台相机。手算 yaw/pitch 太容易差一个正负号，
+// 而关卡里的评委机位是照着场景摆的 —— 那里用"看哪"描述，比用角度自然得多。
+inline void aimCamera(Camera& cam, const Vec3& eye, const Vec3& target) {
+    cam.position = eye;
+    const Vec3 d = normalize(target - eye);
+    cam.yaw = std::atan2(-d.x, -d.z);  // 0 = 朝 -z 看，和 Player 同一套约定
+    cam.pitch = clampf(std::asin(clampf(d.y, -1.0f, 1.0f)), -1.5533f, 1.5533f);
+}
+
 class World {
 public:
     static constexpr int kMaxLights = 8;

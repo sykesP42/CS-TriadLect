@@ -22,6 +22,7 @@
 #include "../engine/reload.h"
 #include "../engine/save.h"
 #include "../engine/world.h"
+#include "level.h"
 #include "player.h"
 #include "workshop.h"
 
@@ -66,6 +67,7 @@ struct Args {
     int fpsCap = 60;                     // --fpscap N：开窗锁多少帧；0 = 不锁（测性能用）
     bool noclip = false;
     bool reset = false;                  // --reset：删掉存档，从头开始
+    int level = -1;                      // --level N：直接站在第 N 关（-1 = 听存档的）
     bool help = false;
 };
 
@@ -93,6 +95,7 @@ void printUsage() {
         "  --trace            每帧打印位置 / 朝向（开窗还带 work= 一帧干活的毫秒数、period= 帧间隔）\n"
         "  --noclip           穿墙（调试和拍图用）\n"
         "  --reset            删掉存档，从出生点从头开始（存档在 saved/save.bin）\n"
+        "  --level <序号>     直接站在第 N 关（0 = 第 0 关「黑暗」），不看存档\n"
         "  --preview [文本]   把中文字模画成终端 ASCII 图（检查字模是否完好）\n"
         "  --hud              在画面上叠一层文字（验证中文渲染进 PNG）\n"
         "  --watch <毫秒>     先应用 content/，再等文件变化并重新应用，然后才截图\n"
@@ -164,6 +167,8 @@ Args parseArgs(int argc, char** argv) {
             a.noclip = true;
         } else if (s == "--reset") {
             a.reset = true;
+        } else if (s == "--level") {
+            a.level = std::atoi(takeValue(argc, argv, i, "--level"));
         } else if (s == "--selftest") {
             a.selftest = true;
         } else if (s == "-h" || s == "--help") {
@@ -242,8 +247,54 @@ void blendRect(Framebuffer& fb, int x, int y, int w, int h, Vec3 color, float al
         for (int gx = 0; gx < w; ++gx) fb.blendPixel(x + gx, y + gy, color, alpha);
 }
 
+// 左上角那块「你现在该干什么」。进度来自评委机位那张小图 —— 和玩家站在哪、
+// 朝哪看都无关（见 game/level.h 的开头）。
+// 没有关卡（title 为空）时整块不画，画面和上一版逐像素一致。
+struct GoalPanel {
+    std::string title;
+    std::string goal;
+    float progress = 0.0f;
+    bool passed = false;
+};
+
+void drawGoalPanel(Framebuffer& fb, const Font& font, int x, int y, const GoalPanel& goal) {
+    if (goal.title.empty()) return;
+    const Vec3 white{2.2f, 2.2f, 2.25f};
+    const Vec3 dim{1.5f, 1.5f, 1.55f};
+    const Vec3 panel{0.02f, 0.025f, 0.04f};
+    const Vec3 barBack{0.16f, 0.18f, 0.22f};
+    const Vec3 barDone{2.60f, 2.00f, 0.75f};  // 过关 = 琥珀色，和终端说"成功"一个颜色
+    const Vec3 barWork{0.55f, 1.55f, 1.30f};
+    const int pad = 6;
+    const int barW = 150, barH = 8;
+
+    char pct[32];
+    // passed 是从 progress 推出来的，这里只喂 progress 就够（见 level.h 的 progressPercent）
+    std::snprintf(pct, sizeof(pct), "%d%%", progressPercent(LevelStatus{goal.progress, 0.0f}));
+    const std::string goalLine = std::string("目标：") + goal.goal;
+    const int textW = std::max(font.measureLine(goalLine), font.measureLine(goal.title));
+    const int rowW = std::max(textW, barW + 12 + font.measureLine(pct)) + pad * 2;
+    const int rowH = font.lineHeight() * 3;
+    blendRect(fb, x, y, rowW, rowH, panel, 0.68f);
+
+    int ty = y + pad / 2;
+    font.drawLine(fb, x + pad, ty, goal.title, white, 1.0f, 1);
+    ty += font.lineHeight();
+    font.drawLine(fb, x + pad, ty, goalLine, dim, 1.0f, 1);
+    ty += font.lineHeight();
+
+    // 进度条：外面一圈描边 + 里面按比例填。用矩形而不是字符块画 ——
+    // 字模里没有「█」这种方块字，硬画会变成豆腐块。
+    const int barY = ty + (font.glyphH() - barH) / 2;
+    blendRect(fb, x + pad - 1, barY - 1, barW + 2, barH + 2, barBack, 0.85f);
+    blendRect(fb, x + pad, barY, barW, barH, Vec3{0.01f, 0.012f, 0.02f}, 1.0f);
+    const int fill = int(goal.progress * float(barW) + 0.5f);
+    if (fill > 0) blendRect(fb, x + pad, barY, fill, barH, goal.passed ? barDone : barWork, 1.0f);
+    font.drawLine(fb, x + pad + barW + 12, ty, pct, goal.passed ? barDone : dim, 1.0f, 1);
+}
+
 void drawHud(Framebuffer& fb, const Font& font, float fps, int bottomInset = 0,
-             const std::string& hint = "") {
+             const std::string& hint = "", const GoalPanel& goal = GoalPanel{}) {
     const Vec3 white{2.2f, 2.2f, 2.25f};
     const Vec3 dim{1.5f, 1.5f, 1.55f};
     const Vec3 panel{0.02f, 0.025f, 0.04f};
@@ -254,6 +305,9 @@ void drawHud(Framebuffer& fb, const Font& font, float fps, int bottomInset = 0,
     const int titleW = font.measureLine(title) * 2;
     blendRect(fb, 8, 8, titleW + pad * 2, font.glyphH() * 2 + pad * 2, panel, 0.68f);
     font.drawLine(fb, 8 + pad, 8 + pad, title, white, 1.0f, 2);
+
+    // 关卡目标就贴在标题下面：进门第一眼要看见"我该干什么"，而不是自己找
+    drawGoalPanel(fb, font, 8, 8 + font.glyphH() * 2 + pad * 2 + 4, goal);
 
     // 状态行：1 倍字号，中文 + 拉丁 + 数字混排，顺便验证比例字距
     char stats[96];
@@ -339,8 +393,28 @@ std::string joinNames(const std::vector<std::string>& v) {
     return out;
 }
 
+// 当前这一关的目标、提示、进度。终端（走到它面前按 E）和 level 命令
+// 打印的是同一段话 —— 学生从哪条路问进来，看到的答案都一样。
+// 打印顺序按"读下去"的顺序：标题 → 目标 → 提示 → 进度。
+// 最后一行是进度，因为控制台只显示最近的几行，这样它一定留在眼前。
+void printLevelBriefing(Console& con, const LevelRuntime& rt) {
+    const Level& lv = levelAt(rt.index);
+    char buf[192];
+    con.printOk(lv.title);
+    std::snprintf(buf, sizeof(buf), "目标：%s", lv.goal);
+    con.print(buf);
+    con.print(lv.hint);
+    if (rt.status.passed()) {
+        std::snprintf(buf, sizeof(buf), "已经过关了（评委机位亮度 %.4f）", double(rt.status.luminance));
+    } else {
+        std::snprintf(buf, sizeof(buf), "现在 %d%%（评委机位亮度 %.4f）", progressPercent(rt.status),
+                      double(rt.status.luminance));
+    }
+    con.print(buf);
+}
+
 void runCommand(const std::string& line, Console& con, World& world, ContentWatcher& watcher,
-                const std::function<void()>& takeShot) {
+                const std::function<void()>& takeShot, const LevelRuntime& rt) {
     const std::vector<std::string> t = splitTokens(line);
     if (t.empty()) return;
     const std::string& cmd = t[0];
@@ -356,8 +430,17 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
         con.print("  inspect [材质|物体]  看材质参数，例如 inspect plastic / inspect 塑料球");
         con.print("                       （不给名字就列出全部材质）");
         con.print("  reload               重新读 content/ 的数据文件（= 按 R）");
+        con.print("  level                这一关要你干什么、现在做到哪了");
+        con.print("  use terminal         同上（走到桌子前的终端按 E 走的就是这条命令）");
         con.print("  shot                 现在存一张干净的 PNG（不含面板）到 shots/");
         con.print("小提示：改 content/*.txt 再敲 reload，比敲命令更接近「做美术」这件事。");
+        return;
+    }
+
+    if (cmd == "level" || cmd == "use") {
+        // 现在能"用"的东西只有终端 —— 它是关卡系统的公告板。所以两条命令
+        // 打印同一段话：E 键那条路是"跟终端说话"，这条是手动查。
+        printLevelBriefing(con, rt);
         return;
     }
 
@@ -603,7 +686,7 @@ void interact(Scene& s, Console& con, Toast& toast, double now) {
 
 // ---------------------------------------------------------------- 开窗模式
 int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Console& con,
-              const std::function<void()>& takeShot, Toast& toast) {
+              const std::function<void()>& takeShot, Toast& toast, Judge& judge, LevelRuntime& rt) {
     Font font;
     font.loadFromFile("assets/font/pixel12.bin");  // 失败会画红块占位，绝不白屏
 
@@ -614,6 +697,22 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
     double last = win.time();
     float fps = 60.0f;
     int frame = 0;
+    // 开场就过关的两种情形要分开（见 main 里那段注释）：早就过了的别再喊，
+    // 刚改完代码回来的必须喊 —— 第 0 关的全部意义就在那一下。
+    bool wasPassed = rt.status.passed();
+
+    // 过关的这句话是整个循环里唯一的奖励，喊多了就不值钱了，所以只有一个地方喊。
+    auto announcePass = [&](const Level& lv, double now) {
+        con.setVisible(true);
+        con.printOk("目标达成：" + std::string(lv.goal));
+        con.print("这一关你过了。改得漂亮 —— 想看哪不对，敲 level 随时能重看这一关的要求。");
+        toast.show("目标达成：" + std::string(lv.goal), now, 3.0);
+    };
+    if (rt.freshWin) {
+        announcePass(levelAt(rt.index), win.time());
+        wasPassed = true;  // 刚补喊过，别让循环的第一帧再喊一遍
+        rt.freshWin = false;
+    }
 
     // 限帧：开窗是靠 present() 直接贴位图，没有垂直同步管着 —— 不锁的话这个循环
     // 会往上百帧跑，把每个核都吃满。宣讲一两个小时，风扇狂转、笔记本掉电都很难看，
@@ -684,13 +783,31 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         syncCamera(scene);
         if (in.interact) interact(scene, con, toast, now);
 
+        // ---- 关卡判定：评委机位给世界拍一张 96x54 的小图，算进度。
+        // 每帧都算：学生改了 content/ 按 R 之后，进度条当场就动 ——
+        // 判定慢半拍的话，"我改了它却说我还没改"是最劝退的体验。
+        const Level& lv = levelAt(rt.index);
+        rt.status = judge.evaluate(scene.world, lv);
+        if (rt.status.passed() && !wasPassed) {
+            // 过关只在"从没过变成过了"的那一帧喊一次（比如当场改了 content/ 按 R）。
+            // 这也是唯一一处"当场看见因果"的奖励：刚敲下的那行数字，让房间亮了。
+            announcePass(lv, now);
+        }
+        if (rt.status.passed()) rt.goals = markLevelDone(rt.goals, rt.index);
+        wasPassed = rt.status.passed();
+
         // ---- 画一帧
         rz.framebuffer().clear(kClearColor);
         renderFrame(rz, scene, float(now));
 
         // 叠字层：HUD → 准星 → 控制台面板（后画的盖住先画的）
         const int inset = con.panelHeight(font, rz.framebuffer().width);
-        drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint);
+        GoalPanel goal;
+        goal.title = lv.title;
+        goal.goal = lv.goal;
+        goal.progress = rt.status.progress;
+        goal.passed = rt.status.passed();
+        drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint, goal);
         const World::RayHit look = scene.world.castRay(scene.player.eye(), scene.player.forward(), Player::kReach);
         drawCrosshair(rz.framebuffer(), font,
                       look.entity >= 0 ? scene.world.entities[size_t(look.entity)].prompt : std::string(),
@@ -708,10 +825,11 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
                                  .count();
 
         if (args.trace) {
-            std::printf("[trace] f=%d pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f work=%.2fms period=%.2fms\n",
+            // prog= 是这一帧的关卡进度：验证"改了数据按 R，进度当场就动"靠它
+            std::printf("[trace] f=%d pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f prog=%.3f work=%.2fms period=%.2fms\n",
                         frame, double(scene.player.feet.x), double(scene.player.feet.y),
                         double(scene.player.feet.z), double(scene.player.yaw),
-                        double(scene.player.pitch), spent, periodMs);
+                        double(scene.player.pitch), double(rt.status.progress), spent, periodMs);
         }
         ++frame;
         if (args.frames > 1 && frame >= args.frames) break;  // 冒烟测试：跑够帧数自己退
@@ -1363,7 +1481,6 @@ void testContent() {
     World w2;
     buildWorkshop(w2);
     std::vector<std::string> log3;
-    const Material before = w2.materials[size_t(chrome)];
     for (const std::string& file : contentFileList()) {
         const ContentPatch p = loadContentFile(file);
         check(p.ok(), (std::string("content：仓库里的 ") + file + " 没有语法错误").c_str());
@@ -1376,14 +1493,94 @@ void testContent() {
     for (const std::string& line : log3) std::printf("[selftest]   %s\n", line.c_str());
     check(log3.empty(), "content：仓库里的数据和场景完全对得上（没有哪一项被跳过）");
 
-    // ⑦ 数据文件必须和代码里的默认值一致：改代码忘了改数据（或反过来），
-    //    症状是「按 R 前后画面突然跳一下」，极难排查，所以在自检里直接盯死。
-    const Material after = w2.materials[size_t(w2.findMaterial("chrome"))];
-    check(sameVec3(before.albedo, after.albedo) && sameVec3(before.emissive, after.emissive) &&
-              before.roughness == after.roughness && before.metallic == after.metallic,
-          "content：content/materials.txt 与代码默认值一致（chrome）");
-    checkClose(w2.ambient.x, 0.42f, 1e-5f, "content：content/lighting.txt 与代码默认值一致（ambient）");
-    checkClose(w2.lights[0].intensity, 48.0f, 1e-5f, "content：content/lighting.txt 与代码默认值一致（主光强度）");
+    // ⑦ 按 R 不该让画面"跳一下"：同一份数据应用两遍，画面必须一像素不差。
+    //    这条原来盯的是"数据文件和代码默认值一致"，可第 0 关偏偏要用数据把灯关掉 ——
+    //    那条已经不成立了。真正会让学生骂人的现像是"我按了 R，画面自己变了"，
+    //    那就直接测它：同一份数据多应用一遍，结果必须完全一样。
+    World w2b;
+    buildWorkshop(w2b);
+    std::vector<std::string> log4;
+    Judge judge;
+    for (const std::string& file : contentFileList()) applyContent(w2b, loadContentFile(file), &log4);
+    judge.evaluate(w2b, levelAt(0));
+    const Framebuffer once = judge.frame();
+    for (const std::string& file : contentFileList()) applyContent(w2b, loadContentFile(file), &log4);
+    const LevelStatus again = judge.evaluate(w2b, levelAt(0));
+    const Framebuffer twice = judge.frame();
+    bool samePixels = once.color.size() == twice.color.size();
+    for (size_t i = 0; samePixels && i < once.color.size(); ++i)
+        samePixels = sameVec3(once.color[i], twice.color[i]);
+    check(samePixels, "content：同一份数据应用两遍，画面逐像素一致（按 R 不会跳）");
+    checkClose(again.luminance, judge.evaluate(w2b, levelAt(0)).luminance, 1e-9f,
+               "关卡：评委机位同一场景连判两次，结果一模一样");
+}
+
+// 关卡自检。关卡表是「学生改完代码之后还会继续长大」的东西 —— 后面还要加三关，
+// 每加一关都是往 kLevels 里塞一个指针，塞错了不该等到宣讲现场才发现。
+//
+// 这里刻意不检查「出厂时进度必须是 0%」：学生把第 0 关过了之后，他机器上的
+// 场景本来就该是亮的、本来就该是 100% —— 自检要能在「没做」和「做完了」
+// 两种状态下都通过，否则学生做完题一跑自检以为自己做错了。
+void testLevel() {
+    World w;
+    buildWorkshop(w);
+    std::vector<std::string> log;
+    for (const std::string& file : contentFileList()) applyContent(w, loadContentFile(file), &log);
+
+    // ① 关卡表的结构
+    check(levelCount() >= 1, "关卡：至少注册了一关");
+    check(findLevel("dark") == 0, "关卡：第 0 关的 id 是 dark（--level 和存档里记的都是它）");
+    check(findLevel("根本没有这一关") == -1, "关卡：id 找不到时返回 -1（不是 0，也不是崩溃）");
+    check(&levelAt(-1) == &levelAt(0), "关卡：下标 -1 被夹回第 0 关");
+    check(&levelAt(99) == &levelAt(levelCount() - 1), "关卡：下标越界被夹到最后一关");
+
+    Judge judge;
+    for (int i = 0; i < levelCount(); ++i) {
+        const Level& lv = levelAt(i);
+        const std::string tag = "关卡 " + std::to_string(i) + "：";
+        check(lv.id[0] != '\0' && lv.title[0] != '\0' && lv.goal[0] != '\0' && lv.hint[0] != '\0',
+              (tag + "id / 标题 / 目标 / 提示，四样都得写").c_str());
+        check(lv.progress != nullptr, (tag + "有判分函数（没有就永远过不了关）").c_str());
+        check(findLevel(lv.id) == i, (tag + "id 在表里是唯一的").c_str());
+
+        const LevelStatus st = judge.evaluate(w, lv);
+        check(st.progress >= 0.0f && st.progress <= 1.0f, (tag + "进度永远落在 0~1 之间").c_str());
+    }
+    check(judge.frame().width == kJudgeWidth && judge.frame().height == kJudgeHeight,
+          "关卡：评委相机拍的是固定的 96x54 小图（不管玩家站在哪、看哪）");
+
+    // ② 判分跟着世界走：同一场景，把灯打开，评委机位必须更亮、进度只能升不能降。
+    //    这条盯的是「判分方向没写反」——把变亮判成变暗是这一块最容易犯的错。
+    const Level& lv0 = levelAt(0);
+    const LevelStatus dark = judge.evaluate(w, lv0);
+    applyContent(w, parseContent("light 0 { intensity 48 }\nlight 1 { intensity 26 }\n", "t"), &log);
+    const LevelStatus lit = judge.evaluate(w, lv0);
+    check(lit.luminance > dark.luminance, "关卡：把两盏灯打开，评委机位确实更亮了");
+    check(lit.progress >= dark.progress, "关卡：更亮的场景进度不会更低（判分方向是对的）");
+
+    // ③ 存档里的进度位掩码。它决定"下次进门要不要再欢呼一次"，所以读写都得对；
+    //    而移位一旦越过 31 位在 C++ 里是未定义行为 —— 越界下标必须被拦住。
+    check(!levelDone(0, 0) && levelDone(markLevelDone(0, 0), 0), "关卡：过关位掩码写进去、读得出来");
+    const uint32_t two = markLevelDone(markLevelDone(0, 3), 5);
+    check(levelDone(two, 3) && levelDone(two, 5) && !levelDone(two, 4),
+          "关卡：写第 3、5 关，只有这两位亮（第 4 关不受影响）");
+    check(markLevelDone(0, -1) == 0 && markLevelDone(0, kMaxTrackedLevels) == 0,
+          "关卡：越界的关卡号写不进掩码（也踩不到未定义行为）");
+    check(!levelDone(0xFFFFFFFFu, -1) && !levelDone(0xFFFFFFFFu, kMaxTrackedLevels) && !levelDone(0xFFFFFFFFu, 999),
+          "关卡：越界的关卡号读出来永远是「没过」");
+
+    // ④ 「进度条上的 100%」和「真的过关了」必须是同一件事。
+    //    这条是拿真实 bug 换来的：达标线曾经正好压在实测亮度上，于是学生照着提示
+    //    改完代码，屏幕写着 100%，程序却判定"没过"（progress = 0.9999）——
+    //    那一刻他只会觉得自己被骗了。这里把整个 0~1 扫一遍，两个口径不许有一处对不上。
+    bool pctHonest = true;
+    for (int i = 0; i <= 20000 && pctHonest; ++i) {
+        LevelStatus s;
+        s.progress = float(i) / 20000.0f;
+        if ((progressPercent(s) == 100) != s.passed()) pctHonest = false;
+    }
+    check(pctHonest, "关卡：进度条写「100%」和「判定过关」永远同时发生");
+    check(progressPercent(LevelStatus{0.9999f, 0.0f}) == 99, "关卡：差一点点过关时，进度条老实写 99%");
 }
 
 // 控制台自检。控制台是「学生唯一能对着画面打字的地方」，它的每一条交互都是承诺：
@@ -1653,6 +1850,7 @@ int runSelfTest() {
     testPlayer();
     testRaycast();
     testContent();
+    testLevel();
     testConsole();
     testSave();
     if (g_failures == 0) {
@@ -1695,7 +1893,7 @@ int main(int argc, char** argv) {
     Console con;
     con.setVisible(args.console);
     con.print("数媒组工作室 · 控制台。敲 help 看全部命令，R 键重新读 content/。");
-    con.print("这个世界由 content/*.txt 决定：改文件 → 敲 reload → 画面当场变。");
+    con.print("这个世界由 content/*.txt 和 game/shaders/ 决定：改一处，画面当场变。");
 
     // 存档：只有开窗模式（= 真的在玩）才读。离屏出图必须每次从同一个出生点开始，
     // 不然"昨天的图和今天逐像素对不上"，而逐像素比对正是本项目的验证主手段。
@@ -1704,6 +1902,8 @@ int main(int argc, char** argv) {
         clearSave();
         std::printf("[存档] 已清空 %s\n", kSavePath);
     }
+    // 关卡进度就从存档里恢复：上次走到第几关，这次还站第几关（M3 的存档里 level 恒为 0）
+    LevelRuntime rt;
     if (windowed && !args.reset) {
         const SaveData sv = loadSave();
         if (sv.loaded) {
@@ -1712,6 +1912,8 @@ int main(int argc, char** argv) {
             scene.player.feet = sv.feet;
             scene.player.yaw = sv.yaw;
             scene.player.pitch = sv.pitch;
+            rt.index = sv.level;
+            rt.goals = sv.goals;
             // 读到的是"上次离开的地方"，但世界可能已经变了（改了 content/ 的家具位置，
             // 存档点就可能在墙里）。站不住就老老实实回出生点 —— 卡在实体里出不来
             // 是最让人以为"游戏坏了"的一种坏法。
@@ -1724,6 +1926,40 @@ int main(int argc, char** argv) {
                             double(sv.feet.x), double(sv.feet.y), double(sv.feet.z));
                 con.print("继续上次的位置。想从出生点重来：加 --reset 启动。");
             }
+        }
+    }
+    // --level 压过存档：验收某一关、以及"我直接跳过去看看"都用它，不必先去删存档
+    if (args.level >= 0) rt.index = args.level;
+    if (rt.index < 0 || rt.index >= levelCount()) {
+        std::printf("[关卡] 要找第 %d 关，可现在总共只有 %d 关 —— 从第 0 关开始\n", rt.index, levelCount());
+        rt.index = 0;
+    }
+
+    // 评委机位先判一次。开场白要用它，--cmd 注入的命令（例如 level）也要用它 ——
+    // 不然"刚进游戏查一下进度"会查到一片 0。
+    Judge judge;
+    {
+        const Level& lv = levelAt(rt.index);
+        rt.status = judge.evaluate(scene.world, lv);
+        std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f）\n", lv.title, lv.goal,
+                    progressPercent(rt.status), double(rt.status.luminance));
+        if (rt.status.passed()) {
+            // 开场就已经过关，有两种情形，要分开：
+            //   · 存档记着"这关以前就过了"    → 平静地提一句，别再欢呼一次；
+            //   · 存档说这是头一回            → 学生多半是刚关掉游戏改完代码、重新编译
+            //     回来的。第 0 关的高光时刻就在这一下（房间亮着，而他上次看到的是全黑），
+            //     不能因为"判定发生在第 0 帧之前"就把它吞掉。
+            // 这里只立旗子、不出声："喊一声"统一由 runWindow 做 —— 那里才是玩家看得见
+            // 的地方（控制台面板 + 屏幕上的 toast），而且只喊一次，不会三个地方各喊一遍。
+            if (levelDone(rt.goals, rt.index)) {
+                con.printOk(std::string(lv.title) + "：你已经过了这一关。");
+            } else {
+                rt.freshWin = true;
+            }
+            rt.goals = markLevelDone(rt.goals, rt.index);
+        } else {
+            con.print(std::string(lv.title) + " —— 目标：" + lv.goal);
+            con.print("走到桌子前的终端，看着它按 E：它会告诉你该改哪个文件、改哪一行。");
         }
     }
 
@@ -1769,26 +2005,31 @@ int main(int argc, char** argv) {
             toast.show("写 PNG 失败，看看 shots/ 目录在不在", 0.0, 2.4);
         }
     };
-    con.setHandler([&](const std::string& line) { runCommand(line, con, scene.world, watcher, takeShot); });
+    con.setHandler([&](const std::string& line) {
+        runCommand(line, con, scene.world, watcher, takeShot, rt);
+    });
 
     // 窗口模式：没有 --shot 就开窗。打不开（没桌面、远程会话…）就老老实实退回离屏，
     // 而不是报个错什么都看不着 —— 这个项目的第一课是"几条命令就能跑起来"。
     if (windowed) {
         Window win;
         if (win.open(args.width, args.height, kWindowTitle)) {
-            const int rc = runWindow(args, win, scene, rz, con, takeShot, toast);
+            // --cmd 在开窗模式下也在进场前跑一遍：离屏那边一直是这样，两边保持一致，
+            // "脚本按得出来的"和"宣讲现场真人按得出来的"才是同一条路。
+            for (const std::string& c : args.cmds) con.run(c);
+            const int rc = runWindow(args, win, scene, rz, con, takeShot, toast, judge, rt);
             // 人一按 ESC / 点叉就存一次档：不搞"找到存档点才能存"，那套仪式感是给
             // 长流程 RPG 的。这里存档的意义只有一条 —— 下次打开还站在昨天那个位置、
             // 昨天改过的 content/ 也还在。存的是「离开时那一刻」的玩家位姿。
             SaveData sv;
-            sv.level = 0;  // 关卡系统 M4 才落地，现在记 0 = 自由参观
-            sv.goals = 0;
+            sv.level = rt.index;  // 走到哪一关了
+            sv.goals = rt.goals;  // 哪几关过了（决定下次进门要不要再欢呼一次）
             sv.feet = scene.player.feet;
             sv.yaw = scene.player.yaw;
             sv.pitch = scene.player.pitch;
             if (writeSave(sv)) {
-                std::printf("[存档] 已存 %s：站在 (%.2f, %.2f, %.2f)\n", kSavePath,
-                            double(sv.feet.x), double(sv.feet.y), double(sv.feet.z));
+                std::printf("[存档] 已存 %s：站在 (%.2f, %.2f, %.2f)，第 %d 关\n", kSavePath,
+                            double(sv.feet.x), double(sv.feet.y), double(sv.feet.z), sv.level);
             } else {
                 std::fprintf(stderr, "[存档] 写 %s 失败 —— 这次的位置没能记下（下次还是从老地方开始）\n",
                              kSavePath);
@@ -1845,6 +2086,13 @@ int main(int argc, char** argv) {
                 avgMs > 0.0 ? 1000.0 / avgMs : 0.0, rz.lastRasterMs());
     std::printf("[dreamlab-rt] 画面平均亮度 %.4f\n", rz.framebuffer().meanLuminance());
 
+    // 关掉引擎重判一次：这几十帧里世界可能被 --walk 走、被 --cmd 改、被 --watch 重载过。
+    // 判定的"收卷"必须发生在这一切之后，否则截的图和量出来的进度说的不是同一件事。
+    const Level& lv = levelAt(rt.index);
+    rt.status = judge.evaluate(scene.world, lv);
+    std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f）\n", lv.title, lv.goal,
+                progressPercent(rt.status), double(rt.status.luminance));
+
     // 文字层（HUD / 控制台）是最后一步叠上去的：不进深度测试、不参与光照，
     // 但和 3D 走同一条 ACES → sRGB 出口 —— 所以 UI 的颜色也得给线性 HDR 值。
     if (args.hud || con.visible()) {
@@ -1854,7 +2102,13 @@ int main(int argc, char** argv) {
         font.loadFromFile("assets/font/pixel12.bin");
         // 先问面板要占多高，状态栏好让开；画面板本身放在最后（后画的盖住先画的）
         const int inset = con.panelHeight(font, renderW);
-        if (args.hud) drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset);
+        GoalPanel goal;
+        goal.title = lv.title;
+        goal.goal = lv.goal;
+        goal.progress = rt.status.progress;
+        goal.passed = rt.status.passed();
+        if (args.hud) drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset,
+                              kWindowHint, goal);
         if (con.visible()) con.draw(rz.framebuffer(), font);
         std::printf("[dreamlab-rt] 文字层已叠加（控制台 %d 行，面板 %d px），缺字 %d 个\n", con.lineCount(),
                     inset, font.missingGlyphs());
