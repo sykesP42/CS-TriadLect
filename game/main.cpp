@@ -20,6 +20,7 @@
 #include "../engine/content.h"
 #include "../engine/mesh.h"
 #include "../engine/reload.h"
+#include "../engine/menu.h"
 #include "../engine/save.h"
 #include "../engine/settings.h"
 #include "../engine/world.h"
@@ -2314,6 +2315,137 @@ void testSave() {
     check(!loadSave(path).loaded, "存档：删档之后读出来是「没有存档」");
 }
 
+// 暂停菜单的自检。只测能自动化的那部分：**命中判定**。
+// 绘制效果自动化不了，靠出图肉眼看（见计划里 Task 3 的第 3 步）。
+void testMenu() {
+    Font font;
+    font.loadFromFile("assets/font/pixel12.bin");
+
+    const int fbW = 1280, fbH = 720;
+    const Menu::Layout L = Menu::computeLayout(fbW, fbH, font);
+
+    // ① 每一行的中点都命中它自己
+    bool allRowsHit = true;
+    for (int r = 0; r < Menu::kRowCount; ++r) {
+        const float mx = float(L.panelX + L.panelW / 2);
+        const float my = float(Menu::rowTop(L, r) + L.rowH / 2);
+        if (Menu::rowAt(mx, my, fbW, fbH, font) != r) allRowsHit = false;
+    }
+    check(allRowsHit, "菜单：1280x720 下每一行的中点都命中自己");
+
+    // ② 面板外 → -1
+    check(Menu::rowAt(5.0f, 5.0f, fbW, fbH, font) == -1, "菜单：点在面板外返回 -1");
+    check(Menu::rowAt(float(fbW) - 2.0f, float(fbH) - 2.0f, fbW, fbH, font) == -1,
+          "菜单：点在最右下角返回 -1（面板居中，角上不是它）");
+
+    // ③ 换到最小那档分辨率，命中仍然对 —— 排版是按 framebuffer 现算的
+    bool smallOk = true;
+    const Menu::Layout S = Menu::computeLayout(854, 480, font);
+    for (int r = 0; r < Menu::kRowCount; ++r) {
+        const float mx = float(S.panelX + S.panelW / 2);
+        const float my = float(Menu::rowTop(S, r) + S.rowH / 2);
+        if (Menu::rowAt(mx, my, 854, 480, font) != r) smallOk = false;
+    }
+    check(smallOk, "菜单：854x480 下每一行也命中自己（排版随 framebuffer 现算）");
+
+    // ④ 所有行都落在面板里 —— 不然会出现"点得到、看不见"
+    check(Menu::rowTop(L, 0) >= L.panelY &&
+              Menu::rowTop(L, Menu::kRowCount - 1) + L.rowH <= L.panelY + L.panelH,
+          "菜单：所有行都落在面板内（点得到也看得见）");
+
+    // ⑤ ◀ ▶ 的左右命中与回绕
+    {
+        int prevX = 0, nextX = 0, aw = 0;
+        Menu::arrowRects(L, Menu::kRowResolution, fbW, prevX, nextX, aw);
+        const float y = float(Menu::rowTop(L, Menu::kRowResolution) + L.rowH / 2);
+        FrameInput in;
+        in.mousePressed = true;
+        in.mouseY = y;
+        Menu m;
+        m.setVisible(true);
+
+        m.setDisplay(1, WindowMode::Windowed);
+        in.mouseX = float(nextX + aw / 2);
+        MenuAction a = m.update(in, fbW, fbH, font);
+        check(a.kind == MenuAction::SetResolution && a.value == 2, "菜单：点 > 进到下一档分辨率");
+
+        m.setDisplay(2, WindowMode::Windowed);
+        in.mouseX = float(prevX + aw / 2);
+        a = m.update(in, fbW, fbH, font);
+        check(a.kind == MenuAction::SetResolution && a.value == 1, "菜单：点 < 退回上一档分辨率");
+
+        m.setDisplay(0, WindowMode::Windowed);
+        in.mouseX = float(prevX + aw / 2);
+        a = m.update(in, fbW, fbH, font);
+        check(a.kind == MenuAction::SetResolution && a.value == kResolutionCount - 1,
+              "菜单：在第一档点 < 回绕到最后一档");
+    }
+
+    // ⑥ 窗口模式那一行同理
+    {
+        int prevX = 0, nextX = 0, aw = 0;
+        Menu::arrowRects(L, Menu::kRowMode, fbW, prevX, nextX, aw);
+        FrameInput in;
+        in.mousePressed = true;
+        in.mouseY = float(Menu::rowTop(L, Menu::kRowMode) + L.rowH / 2);
+        Menu m;
+        m.setVisible(true);
+
+        m.setDisplay(2, WindowMode::Windowed);
+        in.mouseX = float(nextX + aw / 2);
+        MenuAction a = m.update(in, fbW, fbH, font);
+        check(a.kind == MenuAction::SetMode && a.value == int(WindowMode::Borderless),
+              "菜单：点 > 切到无边框");
+
+        m.setDisplay(2, WindowMode::Fullscreen);
+        in.mouseX = float(prevX + aw / 2);
+        a = m.update(in, fbW, fbH, font);
+        check(a.kind == MenuAction::SetMode && a.value == int(WindowMode::Borderless),
+              "菜单：全屏点 < 回绕到无边框");
+    }
+
+    // ⑦ 继续 / 退出
+    {
+        FrameInput in;
+        in.mousePressed = true;
+        in.mouseX = float(L.panelX + L.panelW / 2);
+        Menu m;
+        m.setVisible(true);
+        in.mouseY = float(Menu::rowTop(L, Menu::kRowResume) + L.rowH / 2);
+        check(m.update(in, fbW, fbH, font).kind == MenuAction::Resume, "菜单：点「继续游戏」返回 Resume");
+        in.mouseY = float(Menu::rowTop(L, Menu::kRowQuit) + L.rowH / 2);
+        check(m.update(in, fbW, fbH, font).kind == MenuAction::Quit, "菜单：点「退出游戏」返回 Quit");
+    }
+
+    // ⑧ 只读行（分隔线、关卡标题、目标、进度条）点了不该有反应
+    {
+        FrameInput in;
+        in.mousePressed = true;
+        in.mouseX = float(L.panelX + L.panelW / 2);
+        Menu m;
+        m.setVisible(true);
+        const int readonlyRows[] = {Menu::kRowBlank1, Menu::kRowTitle, Menu::kRowGoal,
+                                    Menu::kRowProgress, Menu::kRowBlank2};
+        bool quiet = true;
+        for (int r : readonlyRows) {
+            in.mouseY = float(Menu::rowTop(L, r) + L.rowH / 2);
+            if (m.update(in, fbW, fbH, font).kind != MenuAction::None) quiet = false;
+        }
+        check(quiet, "菜单：只读行点了没反应（别让人以为点坏了）");
+    }
+
+    // ⑨ 菜单关着的时候，点了什么都不该发生
+    {
+        FrameInput in;
+        in.mousePressed = true;
+        in.mouseX = float(L.panelX + L.panelW / 2);
+        in.mouseY = float(Menu::rowTop(L, Menu::kRowResume) + L.rowH / 2);
+        Menu m;
+        m.setVisible(false);
+        check(m.update(in, fbW, fbH, font).kind == MenuAction::None, "菜单：关着的时候点了没反应");
+    }
+}
+
 // 画面设置的自检。重点全落在"坏输入不许把游戏弄打不开"上 ——
 // 一个设置文件坏了就不让人进游戏，是比没有设置更糟的事。
 void testSettings() {
@@ -2403,6 +2535,7 @@ int runSelfTest() {
     testConsole();
     testSave();
     testSettings();
+    testMenu();
     if (g_failures == 0) {
         std::printf("[selftest] %d 项检查全部通过\n", g_checks);
         return 0;
