@@ -44,6 +44,11 @@ struct FrameInput {
     bool pressed[kKeyCount] = {};  // 这一帧刚按下（边沿）
     float mouseDX = 0.0f;          // 本帧鼠标位移，像素
     float mouseDY = 0.0f;
+    // 客户区坐标的绝对位置 —— 菜单要靠它做命中判定（相对位移点不了东西）。
+    // 注意它是**状态**不是增量，所以 resetFrame() 不清它。
+    float mouseX = 0.0f;
+    float mouseY = 0.0f;
+    bool mousePressed = false;     // 这一帧刚按下左键（边沿，不是"按住"）
     std::string typed;             // 本帧敲进来的可打印 ASCII（控制台输入用）
     bool resized = false;          // 本帧客户区尺寸变过
 
@@ -51,6 +56,7 @@ struct FrameInput {
         for (int i = 0; i < kKeyCount; ++i) pressed[i] = false;
         mouseDX = 0.0f;
         mouseDY = 0.0f;
+        mousePressed = false;
         typed.clear();
         resized = false;
     }
@@ -72,6 +78,12 @@ public:
 
     // 打开一个 w×h 客户区的窗口。失败返回 false（无窗口也能跑离屏渲染）
     bool open(int w, int h, const std::string& title);
+
+    // 换窗口模式 / 尺寸。三种模式都**只改窗口样式，不重建窗口** —— 保住 HWND、DC、
+    // DIB 和输入状态，切换不会闪一下。（open() 在已经开过窗之后会直接返回，本来也重建不了。）
+    // w/h 是"想要的客户区尺寸"；Fullscreen 时忽略它们，铺满显示器。
+    // **不改渲染分辨率** —— 那是调用方的事（全屏是把它拉伸铺满）。
+    bool setWindowMode(WindowMode mode, int w, int h);
 
     // 收消息。返回 false = 用户要关窗（点右上角 X）。
     // Esc 不在这里处理：控制台开着时 Esc 是"关控制台"，关了才是"退出游戏"，

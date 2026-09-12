@@ -111,11 +111,20 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 控制台永远不会出现"半个汉字"或候选框抢焦点的问题（见 console.h 文件头）
             if (wp >= 0x20 && wp < 0x7F) self->frameInput().typed += char(wp & 0xFF);
             return 0;
-        case WM_MOUSEMOVE:
-            self->onMouseTo(float(int16_t(LOWORD(lp))), float(int16_t(HIWORD(lp))));
+        case WM_MOUSEMOVE: {
+            const float cx = float(int16_t(LOWORD(lp)));
+            const float cy = float(int16_t(HIWORD(lp)));
+            // 绝对位置单独记一份：菜单要靠它做命中判定（相对位移点不了东西）
+            self->frameInput().mouseX = cx;
+            self->frameInput().mouseY = cy;
+            self->onMouseTo(cx, cy);
             return 0;
+        }
         case WM_LBUTTONDOWN:
-            self->setMouseCaptured(true);  // 点一下锁住鼠标（第一人称的老规矩）
+            // 记在 setMouseCaptured 之前：菜单开着时鼠标本来就是松的，这一下是"点击"；
+            // 游戏里则是"点一下锁住鼠标"（第一人称的老规矩）。两件事都要能发生。
+            self->frameInput().mousePressed = true;
+            self->setMouseCaptured(true);
             return 0;
         case WM_KILLFOCUS:
             self->onLoseFocus();
@@ -232,7 +241,11 @@ void Window::present(const std::vector<uint8_t>& rgb, int w, int h) {
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
-    // 客户区尺寸可能和 framebuffer 不同（--scale 或刚拉伸过窗口）：让 GDI 帮我们缩放
+    // 放大用最近邻：像素字会变成整齐的方块，而不是糊成一片。
+    // GDI 的默认值本来就是 COLORONCOLOR，显式写出来是为了不依赖默认值
+    // （全屏是"小分辨率拉伸铺满"，这条直接决定了画面看起来是块状还是糊状）。
+    SetStretchBltMode(HDC(hdc_), COLORONCOLOR);
+    // 客户区尺寸可能和 framebuffer 不同（--scale、全屏拉伸、或刚切过分辨率）：让 GDI 帮我们缩放
     StretchDIBits(HDC(hdc_), 0, 0, width_, height_, 0, 0, w, h, dibPixels_, &bmi, DIB_RGB_COLORS, SRCCOPY);
 }
 
@@ -319,6 +332,51 @@ void Window::setTitle(const std::string& title) {
     if (hwnd_ != nullptr) SetWindowTextW(HWND(hwnd_), widen(title).c_str());
 }
 
+bool Window::setWindowMode(WindowMode mode, int w, int h) {
+    if (hwnd_ == nullptr) return false;
+    HWND hw = HWND(hwnd_);
+
+    // 只改样式，不销毁重建 —— 保住 HWND / DC / DIB / 输入状态，切换不会闪。
+    // 三种模式的区别全在"用哪套样式"和"摆多大"上。
+    DWORD style = DWORD(GetWindowLongPtrW(hw, GWL_STYLE));
+    style &= ~DWORD(WS_OVERLAPPEDWINDOW | WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU |
+                    WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+
+    if (mode == WindowMode::Windowed) {
+        int cw = w > 0 ? w : width_;
+        int ch = h > 0 ? h : height_;
+        fitWindowToScreen(cw, ch);  // 复用"别开出一扇屏幕装不下的窗"那套逻辑
+        RECT r = {0, 0, cw, ch};
+        AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);  // 让客户区正好是 cw x ch
+        SetWindowLongPtrW(hw, GWL_STYLE, LONG_PTR(style | WS_OVERLAPPEDWINDOW));
+        SetWindowPos(hw, nullptr, 0, 0, r.right - r.left, r.bottom - r.top,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        width_ = cw;
+        height_ = ch;
+        return true;
+    }
+
+    // 无边框窗口与全屏都走 WS_POPUP（没有标题栏、没有边框）
+    SetWindowLongPtrW(hw, GWL_STYLE, LONG_PTR(style | WS_POPUP));
+
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    const int screenH = GetSystemMetrics(SM_CYSCREEN);
+    int x = 0, y = 0, outW = screenW, outH = screenH;
+
+    if (mode == WindowMode::Borderless) {
+        outW = w > 0 ? w : width_;
+        outH = h > 0 ? h : height_;
+        x = (screenW - outW) / 2;
+        y = (screenH - outH) / 2;
+    }
+    // Fullscreen 就是"铺满显示器"—— 用 SM_CXSCREEN 而不是工作区，要连任务栏一起盖住
+
+    SetWindowPos(hw, HWND_TOP, x, y, outW, outH, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    width_ = outW;
+    height_ = outH;
+    return true;
+}
+
 void fitWindowToScreen(int& w, int& h) {
     RECT wa = {};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) return;  // 问不出来就原样放行
@@ -392,6 +450,13 @@ void Window::onLoseFocus() {}
 void Window::recenterMouse() {}
 double Window::time() const { return 0.0; }
 void Window::setTitle(const std::string& title) { (void)title; }
+
+bool Window::setWindowMode(WindowMode mode, int w, int h) {
+    (void)mode;  // 这边根本开不出窗口，也就无所谓模式
+    (void)w;
+    (void)h;
+    return false;
+}
 
 void fitWindowToScreen(int& w, int& h) {
     (void)w;  // 这边开不出窗口，没什么可收的
