@@ -12,6 +12,7 @@
 #include "../core/font.h"
 #include "../core/framebuffer.h"
 #include "../core/material.h"
+#include "../core/platform.h"
 #include "../core/png_write.h"
 #include "../core/raster.h"
 #include "../core/texture.h"
@@ -20,6 +21,7 @@
 #include "../engine/mesh.h"
 #include "../engine/reload.h"
 #include "../engine/world.h"
+#include "player.h"
 #include "workshop.h"
 
 using namespace dlab;
@@ -28,6 +30,12 @@ namespace {
 
 // 空场景的底色：不是纯黑，留一点冷色，让人一眼看出「这是没照到光的暗处」而不是「渲染坏了」
 const Vec3 kClearColor{0.012f, 0.014f, 0.02f};
+
+// 开窗模式的标题和常驻提示。提示直接写在画面里而不是只写在 README ——
+// 第一次运行的人会先看画面，不会先看文档。
+const char* kWindowTitle = "dreamlab-rt —— 数媒组工作室（WASD 走 · 鼠标看 · E 交互 · ~ 控制台 · F2 拍照）";
+const char* kWindowHint = "WASD 走 · 鼠标看 · E 交互 · ~ 控制台 · F2 拍照 · Esc 退出";
+const char* kAutopilotHint = "自动演示：--walk 正在接管输入（想自己走就别给 --walk）";
 
 // ---------------------------------------------------------------- 命令行
 
@@ -50,6 +58,12 @@ struct Args {
     int watchMs = 0;                     // >0 = 截图前先等 content 变化（离屏验证热重载）
     bool console = false;                // 显示控制台面板
     std::vector<std::string> cmds;       // --cmd：进游戏前注入的命令（可重复）
+    bool hasShot = false;                // 给了 --shot 就是离屏模式；否则开窗打游戏
+    std::string walk;                    // --walk "w:120,d:60,e"：脚本输入（自动演示/验收）
+    bool trace = false;                  // 每帧打印玩家位置（离屏验收碰撞用）
+    int scale = 1;                       // --scale N：按 1/N 分辨率渲染，窗口放大显示
+    int fpsCap = 60;                     // --fpscap N：开窗锁多少帧；0 = 不锁（测性能用）
+    bool noclip = false;
     bool help = false;
 };
 
@@ -57,16 +71,25 @@ void printUsage() {
     std::printf(
         "dreamlab-rt —— 逐梦实验室数媒组示例项目\n"
         "\n"
+        "不带参数直接运行 = 开窗打游戏：WASD 走，鼠标看，E 交互，~ 开控制台，F2 拍照，Esc 退出。\n"
+        "给了 --shot 就是离屏模式：不开窗，渲完写一张 PNG（脚本、验收、无桌面环境都用这个）。\n"
+        "\n"
         "用法: dreamlab [选项]\n"
-        "  --shot <路径>      截图输出路径（默认 build/out.png）\n"
-        "  --width <像素>     渲染宽度（默认 480）\n"
-        "  --height <像素>    渲染高度（默认 270）\n"
-        "  --frames <帧数>    离屏模式运行的帧数（默认 1）\n"
+        "  --shot <路径>      离屏截图输出路径（给了它就一定不开窗）\n"
+        "  --width <像素>     渲染宽度 / 窗口客户区宽度（默认 480）\n"
+        "  --height <像素>    渲染高度 / 窗口客户区高度（默认 270）\n"
+        "  --scale <倍数>     按 1/N 分辨率渲染再放大铺满窗口（低配机器用 2 或 3）\n"
+        "  --fpscap <帧率>    开窗锁帧（默认 60）；给 0 就不锁 —— 想看看自己机器能跑多快用它\n"
+        "  --frames <帧数>    离屏：跑多少帧后出图；开窗：跑够多少帧自动退出（默认 1 / 一直跑）\n"
         "  --threads <数量>   渲染线程数（默认自动）\n"
         "  --exposure <倍数>  曝光（默认 1.0）\n"
         "  --fov <角度>       竖直视场角（默认用场景的 50°）\n"
-        "  --cam x,y,z        相机位置\n"
+        "  --cam x,y,z        相机（眼睛）位置\n"
         "  --look x,y,z       相机看向的点\n"
+        "  --walk \"w:120,a:60\" 脚本输入：按 w 走 120 帧、再按 a 走 60 帧，e 是「按一下」\n"
+        "                     键名 w a s d e，冒号后是帧数（60 帧 = 1 秒）。给了它就忽略键盘\n"
+        "  --trace            每帧打印位置 / 朝向（开窗还带 work= 一帧干活的毫秒数、period= 帧间隔）\n"
+        "  --noclip           穿墙（调试和拍图用）\n"
         "  --preview [文本]   把中文字模画成终端 ASCII 图（检查字模是否完好）\n"
         "  --hud              在画面上叠一层文字（验证中文渲染进 PNG）\n"
         "  --watch <毫秒>     先应用 content/，再等文件变化并重新应用，然后才截图\n"
@@ -96,6 +119,7 @@ Args parseArgs(int argc, char** argv) {
         const std::string s = argv[i];
         if (s == "--shot") {
             a.shot = takeValue(argc, argv, i, "--shot");
+            a.hasShot = true;
         } else if (s == "--width") {
             a.width = std::atoi(takeValue(argc, argv, i, "--width"));
         } else if (s == "--height") {
@@ -125,6 +149,16 @@ Args parseArgs(int argc, char** argv) {
         } else if (s == "--cmd") {
             a.cmds.push_back(takeValue(argc, argv, i, "--cmd"));
             a.console = true;
+        } else if (s == "--walk") {
+            a.walk = takeValue(argc, argv, i, "--walk");
+        } else if (s == "--trace") {
+            a.trace = true;
+        } else if (s == "--scale") {
+            a.scale = std::atoi(takeValue(argc, argv, i, "--scale"));
+        } else if (s == "--fpscap") {
+            a.fpsCap = std::atoi(takeValue(argc, argv, i, "--fpscap"));
+        } else if (s == "--noclip") {
+            a.noclip = true;
         } else if (s == "--selftest") {
             a.selftest = true;
         } else if (s == "-h" || s == "--help") {
@@ -138,6 +172,10 @@ Args parseArgs(int argc, char** argv) {
     if (a.height < 1) a.height = 1;
     if (a.frames < 1) a.frames = 1;
     if (a.exposure <= 0.0f) a.exposure = 1.0f;
+    if (a.scale < 1) a.scale = 1;
+    if (a.scale > 8) a.scale = 8;
+    if (a.fpsCap > 1000) a.fpsCap = 1000;
+    if (a.fpsCap < 0) a.fpsCap = 0;
     return a;
 }
 
@@ -147,20 +185,26 @@ struct Scene {
     World world;
     Workshop workshop;
     Camera camera;
+    Player player;  // 玩家才是"人在哪"的真相，camera 每帧从它算出来
 };
 
 void buildScene(Scene& s) {
     s.workshop = buildWorkshop(s.world);
-    s.camera.position = Vec3{0.0f, 1.62f, 4.5f};
-    s.camera.yaw = 0.0f;
-    s.camera.pitch = -0.06f;
+    // 出生点：站在屋子中间偏前，面朝桌子和终端（-z）。手感和"推门进来"一致。
+    // 低头 0.06 弧度是 M3.1 就定下的取景：桌面、终端、地上的棋盘格都在画面里 ——
+    // 视角换成第一人称之后这一点也不能漂，不然"和上一版的图逐像素对得上"就没了。
+    s.player.feet = Vec3{0.0f, 0.0f, 4.5f};
+    s.player.yaw = 0.0f;
+    s.player.pitch = -0.06f;
 }
 
-// 把"看向某个点"换算成偏航/俯仰（相机用欧拉角存，玩家输入天然就是这两个角）
-void lookAtPoint(Camera& cam, Vec3 target) {
-    const Vec3 d = normalize(target - cam.position);
-    cam.yaw = std::atan2(-d.x, -d.z);
-    cam.pitch = std::asin(clampf(d.y, -1.0f, 1.0f));
+// 眼睛在哪、往哪看 —— 渲染只认 camera，所以走路之后必须同步一次。
+// 单独抽出来是为了让"忘了同步"这件事有个唯一的、容易被看见的地方。
+void syncCamera(Scene& s) {
+    s.camera.position = s.player.eye();
+    s.camera.yaw = s.player.yaw;
+    s.camera.pitch = s.player.pitch;
+    // fovY 不动：它是镜头参数，不是人的姿态
 }
 
 // 每帧把整场景重新提交一次（P0 不做场景图缓存，先把管线跑通）
@@ -169,26 +213,41 @@ void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds) {
     s.world.render(rz, s.camera);
 }
 
+// ---------------------------------------------------------------- 屏幕上的小提示
+// 「按一下 E 没反应」是最容易让人以为程序坏了的事，所以任何一次按键都要有回声。
+struct Toast {
+    std::string text;
+    double until = -1.0;  // 到点自动消失（秒，懒得引第二个时钟，用窗口的）
+    void show(const std::string& s, double now, double seconds = 1.8) {
+        text = s;
+        until = now + seconds;
+    }
+    bool alive(double now) const { return !text.empty() && now < until; }
+};
+
 // ---------------------------------------------------------------- HUD
 // 文字直接叠进颜色缓冲，不参与深度测试。颜色是线性 HDR 且最后统一过 ACES，
 // 所以"纯白文字"要给 2.2 左右 —— 给 1.0 出来是灰的（渲染顺序决定的，不是 bug）。
 // bottomInset：控制台面板占掉的高度。贴底的状态栏得往上让开，不然会被半透明
 // 面板盖成一层灰影 —— 两样东西叠在一起，比哪一样单独显示都难读。
-void drawHud(Framebuffer& fb, const Font& font, float fps, int bottomInset = 0) {
+
+// 半透明底板：白墙前面的白字根本读不了，垫一层深色是唯一办法
+void blendRect(Framebuffer& fb, int x, int y, int w, int h, Vec3 color, float alpha) {
+    for (int gy = 0; gy < h; ++gy)
+        for (int gx = 0; gx < w; ++gx) fb.blendPixel(x + gx, y + gy, color, alpha);
+}
+
+void drawHud(Framebuffer& fb, const Font& font, float fps, int bottomInset = 0,
+             const std::string& hint = "") {
     const Vec3 white{2.2f, 2.2f, 2.25f};
     const Vec3 dim{1.5f, 1.5f, 1.55f};
     const Vec3 panel{0.02f, 0.025f, 0.04f};
     const int pad = 6;
 
-    auto panelRect = [&](int x, int y, int w, int h) {
-        for (int gy = 0; gy < h; ++gy)
-            for (int gx = 0; gx < w; ++gx) fb.blendPixel(x + gx, y + gy, panel, 0.68f);
-    };
-
     // 标题：2 倍字号，验证中文放大后依然是干净的像素字
     const std::string title = "数媒组工作室";
     const int titleW = font.measureLine(title) * 2;
-    panelRect(8, 8, titleW + pad * 2, font.glyphH() * 2 + pad * 2);
+    blendRect(fb, 8, 8, titleW + pad * 2, font.glyphH() * 2 + pad * 2, panel, 0.68f);
     font.drawLine(fb, 8 + pad, 8 + pad, title, white, 1.0f, 2);
 
     // 状态行：1 倍字号，中文 + 拉丁 + 数字混排，顺便验证比例字距
@@ -196,8 +255,45 @@ void drawHud(Framebuffer& fb, const Font& font, float fps, int bottomInset = 0) 
     std::snprintf(stats, sizeof(stats), "DreamLab 2026 · %.0f FPS · %dx%d", double(fps), fb.width, fb.height);
     const int statsW = font.measureLine(stats);
     const int statsY = fb.height - bottomInset - font.glyphH() - pad - 8;
-    panelRect(8, statsY - pad, statsW + pad * 2, font.glyphH() + pad * 2);
+    blendRect(fb, 8, statsY - pad, statsW + pad * 2, font.glyphH() + pad * 2, panel, 0.68f);
     font.drawLine(fb, 8 + pad, statsY, stats, dim, 1.0f, 1);
+
+    // 操作提示（只有开窗模式才给）：告诉人这台机器能按哪些键。
+    // 不写这一行，第一次运行的人只会盯着画面发呆 —— 按键是唯一需要"教"的东西。
+    if (!hint.empty()) {
+        const int hintW = font.measureLine(hint);
+        const int hintY = statsY - font.glyphH() - pad * 2 - 4;
+        blendRect(fb, 8, hintY - pad, hintW + pad * 2, font.glyphH() + pad * 2, panel, 0.68f);
+        font.drawLine(fb, 8 + pad, hintY, hint, white, 1.0f, 1);
+    }
+}
+
+// 准星 + 「你正看着什么」+ 一闪而过的提示。只在开窗模式画：
+// --shot 出的图是拿去当素材/验收的，不该在上面烧一个十字。
+void drawCrosshair(Framebuffer& fb, const Font& font, const std::string& prompt,
+                   const std::string& toast) {
+    const Vec3 ink{2.10f, 2.12f, 2.16f};
+    const int cx = fb.width / 2;
+    const int cy = fb.height / 2;
+    const int arm = 6, gap = 3;
+    for (int i = gap; i <= gap + arm; ++i) {
+        fb.blendPixel(cx - i, cy, ink, 0.70f);
+        fb.blendPixel(cx + i, cy, ink, 0.70f);
+        fb.blendPixel(cx, cy - i, ink, 0.70f);
+        fb.blendPixel(cx, cy + i, ink, 0.70f);
+    }
+    fb.blendPixel(cx, cy, ink, 0.90f);
+
+    // 有可交互的东西就显示它的 prompt（文字来自实体本身，不是这里写死的）；
+    // 没有就显示临时消息（「按了没反应」的那些回声）。
+    const std::string text = !prompt.empty() ? prompt : toast;
+    if (text.empty()) return;
+    const Vec3 color = !prompt.empty() ? Vec3{2.35f, 2.32f, 2.30f} : Vec3{2.60f, 2.00f, 0.75f};
+    const int w = font.measureLine(text);
+    const int x = cx - w / 2;
+    const int y = cy + 24;
+    blendRect(fb, x - 6, y - 4, w + 12, font.glyphH() + 8, Vec3{0.014f, 0.017f, 0.026f}, 0.72f);
+    font.drawLine(fb, x, y, text, color, 1.0f, 1);
 }
 
 // ---------------------------------------------------------------- 控制台命令
@@ -252,7 +348,8 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
         con.print("  light <强度>         主光，例如 light 60");
         con.print("  light <灯号> <强度>  指定某一盏，例如 light 0 60 / light 1 30");
         con.print("                       （灯号就是 content/lighting.txt 里的编号）");
-        con.print("  inspect [材质名]     看材质参数（不给名字就列出全部）");
+        con.print("  inspect [材质|物体]  看材质参数，例如 inspect plastic / inspect 塑料球");
+        con.print("                       （不给名字就列出全部材质）");
         con.print("  reload               重新读 content/ 的数据文件（= 按 R）");
         con.print("  shot                 现在存一张干净的 PNG（不含面板）到 shots/");
         con.print("小提示：改 content/*.txt 再敲 reload，比敲命令更接近「做美术」这件事。");
@@ -307,14 +404,28 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
                       joinNames(world.materialNames));
             return;
         }
-        const int idx = world.findMaterial(t[1]);
+        int idx = world.findMaterial(t[1]);
+        std::string title = t[1];
         if (idx < 0) {
-            con.printError("没有叫 \"" + t[1] + "\" 的材质。有的：" + joinNames(world.materialNames));
+            // 也认实体名 —— 学生面前只有一个「塑料球」，没有 "plastic"。
+            // 这条别名让按 E 观察材质成为一条能走通的链，而不是一句报错。
+            const int ent = world.findEntity(t[1]);
+            if (ent >= 0) {
+                const Entity& e = world.entities[size_t(ent)];
+                if (e.material >= 0 && e.material < int(world.materials.size())) {
+                    idx = e.material;
+                    title = t[1] + " 用的是「" + world.materialNames[size_t(idx)] + "」";
+                }
+            }
+        }
+        if (idx < 0) {
+            con.printError("没有叫 \"" + t[1] + "\" 的材质或物体。材质有：" + joinNames(world.materialNames));
             return;
         }
         const Material& m = world.materials[size_t(idx)];
+        const std::string matName = world.materialNames[size_t(idx)];
         char buf[256];
-        std::snprintf(buf, sizeof(buf), "%s：albedo %.3f %.3f %.3f · 粗糙度 %.2f · 金属度 %.2f", t[1].c_str(),
+        std::snprintf(buf, sizeof(buf), "%s：albedo %.3f %.3f %.3f · 粗糙度 %.2f · 金属度 %.2f", title.c_str(),
                       double(m.albedo.x), double(m.albedo.y), double(m.albedo.z), double(m.roughness),
                       double(m.metallic));
         con.print(buf);
@@ -328,7 +439,7 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
                           double(m.emissive.y), double(m.emissive.z));
             con.print(buf);
         }
-        con.print("  想看它变样：改 content/materials.txt 里 material " + t[1] + " 那一段，存盘后敲 reload");
+        con.print("  想看它变样：改 content/materials.txt 里 material " + matName + " 那一段，存盘后敲 reload");
         return;
     }
 
@@ -366,6 +477,249 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
     }
 
     con.printError("没有这个命令：" + cmd + "（敲 help 看全部命令）");
+}
+
+// ---------------------------------------------------------------- 输入 → 意图
+// 键盘、脚本、以后的手柄，最后都变成同一个 InputState 交给 updatePlayer。
+// 走路的正确性（碰撞、滑墙）因此可以在离屏下自动化验证 —— 见 testPlayer()。
+
+// 窗口这一帧的键鼠 → 意图
+InputState fromWindowInput(const FrameInput& pi) {
+    InputState in;
+    if (pi.down[int(Key::W)]) in.moveForward += 1.0f;
+    if (pi.down[int(Key::S)]) in.moveForward -= 1.0f;
+    if (pi.down[int(Key::D)]) in.moveRight += 1.0f;
+    if (pi.down[int(Key::A)]) in.moveRight -= 1.0f;
+    in.lookDX = pi.mouseDX;
+    in.lookDY = pi.mouseDY;
+    in.interact = pi.pressed[int(Key::E)];
+    return in;
+}
+
+// --walk "w:120,w+d:60,e" → 一串「按住哪些键、按多少帧」。
+// 帧数是绝对的，所以同一串脚本在哪台机器上跑出来都一样 —— 验收要的就是这个。
+struct WalkStep {
+    std::vector<Key> keys;
+    int frames = 1;
+};
+
+std::vector<WalkStep> parseWalk(const std::string& text) {
+    std::vector<WalkStep> steps;
+    std::string seg;
+    auto flush = [&]() {
+        if (seg.empty()) return;
+        const size_t colon = seg.find(':');
+        const std::string names = colon == std::string::npos ? seg : seg.substr(0, colon);
+        int frames = colon == std::string::npos ? 1 : std::atoi(seg.c_str() + colon + 1);
+        if (frames < 1) frames = 1;
+
+        WalkStep step;
+        step.frames = frames;
+        std::string name;
+        for (size_t i = 0; i <= names.size(); ++i) {
+            if (i == names.size() || names[i] == '+') {
+                if (name == "w") step.keys.push_back(Key::W);
+                else if (name == "s") step.keys.push_back(Key::S);
+                else if (name == "a") step.keys.push_back(Key::A);
+                else if (name == "d") step.keys.push_back(Key::D);
+                else if (name == "e") step.keys.push_back(Key::E);
+                else if (name == "left") step.keys.push_back(Key::Left);
+                else if (name == "right") step.keys.push_back(Key::Right);
+                else if (name == "up") step.keys.push_back(Key::Up);
+                else if (name == "down") step.keys.push_back(Key::Down);
+                else {
+                    std::fprintf(stderr, "[错误] --walk 不认识 \"%s\"（可用：w a s d e left right up down，"
+                                         "多个键用 + 连，:后面是帧数，例如 w:120,w+d:60,e）\n",
+                                 name.c_str());
+                    std::exit(2);
+                }
+                name.clear();
+            } else {
+                name += names[i];
+            }
+        }
+        steps.push_back(step);
+        seg.clear();
+    };
+    for (char c : text) {
+        if (c == ',' || c == ';' || c == ' ' || c == '\t') flush();
+        else seg += c;
+    }
+    flush();
+    return steps;
+}
+
+InputState walkInputAt(const std::vector<WalkStep>& steps, int frame) {
+    InputState in;
+    int t = 0;
+    for (const WalkStep& s : steps) {
+        if (frame < t + s.frames) {
+            for (Key k : s.keys) {
+                switch (k) {
+                    case Key::W: in.moveForward += 1.0f; break;
+                    case Key::S: in.moveForward -= 1.0f; break;
+                    case Key::D: in.moveRight += 1.0f; break;
+                    case Key::A: in.moveRight -= 1.0f; break;
+                    case Key::Left: in.lookDX -= 8.0f; break;
+                    case Key::Right: in.lookDX += 8.0f; break;
+                    case Key::Up: in.lookDY -= 8.0f; break;
+                    case Key::Down: in.lookDY += 8.0f; break;
+                    case Key::E: in.interact = true; break;
+                    default: break;
+                }
+            }
+            return in;
+        }
+        t += s.frames;
+    }
+    return in;
+}
+
+// 看着某个东西按 E：执行它自己带的命令，并且走控制台那条路。
+// 「实体 → 命令 → 控制台」这条链让交互、打字、--cmd 共用同一个解释器：
+// 关卡作者只要给实体写一句 command，不用碰 C++。
+void interact(Scene& s, Console& con, Toast& toast, double now) {
+    const World::RayHit hit = s.world.castRay(s.player.eye(), s.player.forward(), Player::kReach);
+    if (hit.entity < 0) {
+        toast.show("准星前面没有能互动的东西（走近点，或者低头看看）", now);
+        return;
+    }
+    const Entity& e = s.world.entities[size_t(hit.entity)];
+    if (e.command.empty()) {
+        toast.show("「" + e.name + "」现在还没接上动作", now);
+        return;
+    }
+    // 把控制台翻开：命令的来龙去脉（执行了哪一句、结果是什么）就在眼前，
+    // 而不是"按了 E 之后画面悄悄变了，不知道发生了什么"。
+    con.setVisible(true);
+    con.print("（看着「" + e.name + "」按下 E）");
+    con.run(e.command);
+}
+
+// ---------------------------------------------------------------- 开窗模式
+int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Console& con,
+              const std::function<void()>& takeShot, Toast& toast) {
+    Font font;
+    font.loadFromFile("assets/font/pixel12.bin");  // 失败会画红块占位，绝不白屏
+
+    const std::vector<WalkStep> walk = parseWalk(args.walk);
+    const bool autopilot = !args.walk.empty();
+    if (autopilot) std::printf("[dreamlab-rt] --walk 接管输入（%s），键盘这局不生效\n", args.walk.c_str());
+
+    double last = win.time();
+    float fps = 60.0f;
+    int frame = 0;
+
+    // 限帧：开窗是靠 present() 直接贴位图，没有垂直同步管着 —— 不锁的话这个循环
+    // 会往上百帧跑，把每个核都吃满。宣讲一两个小时，风扇狂转、笔记本掉电都很难看，
+    // 所以要锁。锁得住的前提是"睡得准"：系统定时器粒度默认 15.6ms 一档，睡 5ms
+    // 会睡到 15.6ms、60 帧直接掉成 30 帧 —— platform_win32.cpp 开窗时把它调到 1ms 了。
+    // 提前干完就睡到下一帧的点上；干不完就别睡，让帧率自己掉下去。
+    // --fpscap 0 = 不锁（量性能用），--fpscap 30 = 低配机器省电用。
+    const double kFrameBudget = args.fpsCap > 0 ? 1.0 / double(args.fpsCap) : 0.0;
+    auto prevFrameStart = std::chrono::steady_clock::now();
+
+    while (win.pump()) {
+        const auto frameStart = std::chrono::steady_clock::now();
+        // 上一帧到这一帧的间隔（帧率就是它的倒数）。和 work 一起看，
+        // 就知道时间是花在渲染上还是花在等上。
+        const double periodMs =
+            std::chrono::duration<double, std::milli>(frameStart - prevFrameStart).count();
+        prevFrameStart = frameStart;
+        const double now = win.time();
+        float dt = float(now - last);
+        last = now;
+        // 卡一下（拖动窗口、切出去回来）不要变成一大步 —— dt 大了会一步穿过墙
+        dt = clampf(dt, 0.0005f, 0.05f);
+
+        // HUD 上的 FPS 是「玩家眼里的一秒多少帧」（帧间隔的倒数，含限帧等待），
+        // 不是「渲染一帧要多久」—— 限了帧以后这两个能差三倍，写哪个都得说清楚。
+        // 渲染本身多快，看 --trace 里的 work=。离屏出图没有"帧率"可言，
+        // 那边显示的仍是渲染耗时换算出来的吞吐，两个数各有各的用处。
+        if (periodMs > 0.0) fps = fps * 0.9f + float(1000.0 / periodMs) * 0.1f;
+
+        const FrameInput& pi = win.input();
+
+        // ---- 全局按键
+        if (pi.pressed[int(Key::Esc)]) {
+            if (con.visible()) {
+                con.setVisible(false);
+                win.setMouseCaptured(true);  // 刚按 Esc 的人一定在窗口里，直接回到"鼠标看视角"
+            } else {
+                break;  // 控制台没开 → Esc 退出
+            }
+        }
+        if (pi.pressed[int(Key::Tilde)]) {
+            con.toggle();
+            win.setMouseCaptured(!con.visible());
+        }
+        if (pi.pressed[int(Key::F2)]) takeShot();
+
+        // ---- 控制台开着的时候，键盘全给它。
+        // 不然敲 ambient 里的 a/w/d 会顺手把人挪走 —— 那是第一次用就会骂人的 bug。
+        if (con.visible()) {
+            for (char c : pi.typed) con.typeChar(c);
+            if (pi.pressed[int(Key::Backspace)]) con.backspace();
+            if (pi.pressed[int(Key::Enter)]) con.submit();
+            win.setMouseCaptured(false);  // 打字要看得见鼠标，也不能让视角跟着甩
+        } else if (!autopilot) {
+            if (pi.pressed[int(Key::R)]) con.run("reload");  // R = 重读 content/（和 --cmd reload 同一条路）
+            if (!pi.typed.empty()) {
+                // 二话不说直接开打 = 想敲命令（不用先知道 ~ 在哪），第一个字符得留住
+                con.setVisible(true);
+                for (char c : pi.typed) con.typeChar(c);
+                win.setMouseCaptured(false);
+            }
+        }
+
+        // ---- 走一步
+        const InputState in = autopilot ? walkInputAt(walk, frame)
+                                        : (con.visible() ? InputState{} : fromWindowInput(pi));
+        updatePlayer(scene.player, in, scene.world, dt);
+        syncCamera(scene);
+        if (in.interact) interact(scene, con, toast, now);
+
+        // ---- 画一帧
+        rz.framebuffer().clear(kClearColor);
+        renderFrame(rz, scene, float(now));
+
+        // 叠字层：HUD → 准星 → 控制台面板（后画的盖住先画的）
+        const int inset = con.panelHeight(font, rz.framebuffer().width);
+        drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint);
+        const World::RayHit look = scene.world.castRay(scene.player.eye(), scene.player.forward(), Player::kReach);
+        drawCrosshair(rz.framebuffer(), font,
+                      look.entity >= 0 ? scene.world.entities[size_t(look.entity)].prompt : std::string(),
+                      toast.alive(now) ? toast.text : std::string());
+        if (con.visible()) con.draw(rz.framebuffer(), font);
+
+        win.present(rz.framebuffer().toRGB8(args.exposure, true), rz.framebuffer().width,
+                    rz.framebuffer().height);
+        win.endFrame();
+
+        // 这一帧从起床到贴完屏幕一共花了多少毫秒。放在 --trace 里是因为
+        // "卡在哪一段"这种事，没有数字就只能猜；真要调性能时也不用另加计时器。
+        const double spent = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - frameStart)
+                                 .count();
+
+        if (args.trace) {
+            std::printf("[trace] f=%d pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f work=%.2fms period=%.2fms\n",
+                        frame, double(scene.player.feet.x), double(scene.player.feet.y),
+                        double(scene.player.feet.z), double(scene.player.yaw),
+                        double(scene.player.pitch), spent, periodMs);
+        }
+        ++frame;
+        if (args.frames > 1 && frame >= args.frames) break;  // 冒烟测试：跑够帧数自己退
+
+        // 提前干完就睡到下一帧的点上 —— 别把 CPU 空转掉。留 1ms 余量：
+        // 睡过了头会白等一整格，宁可早醒一丝（63 帧和 60 帧肉眼没区别）
+        const double rest = kFrameBudget * 1000.0 - spent - 1.0;
+        if (rest > 0.0) std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(rest));
+    }
+
+    win.close();
+    std::printf("[dreamlab-rt] 窗口关了（跑了 %d 帧）\n", frame);
+    return 0;
 }
 
 // ---------------------------------------------------------------- 自检
@@ -731,6 +1085,211 @@ void testWorld() {
     check(w.findMaterial("不存在的材质") < 0, "世界：找不到的材质返回 -1");
 }
 
+// 走路和碰撞。这一节的存在理由：碰撞错了（差一厘米就穿模）靠肉眼看窗口是看不出来的，
+// 只有能离屏跑、能断言"停在哪一米"才敢说它是对的。所有期望值都从世界的包围盒算出来，
+// 不写死数字 —— 关卡改尺寸，测试跟着走。
+void testPlayer() {
+    World w;
+    buildWorkshop(w);
+    const float dt = 1.0f / 60.0f;
+
+    auto run = [&](Player& p, const InputState& in, int frames) {
+        bool bumped = false;
+        for (int i = 0; i < frames; ++i) bumped = updatePlayer(p, in, w, dt) || bumped;
+        return bumped;
+    };
+
+    // ① 不动就不该挪
+    {
+        Player p;
+        run(p, InputState{}, 120);
+        checkClose(p.feet.x, 0.0f, 1e-5f, "玩家：不按键就不动（x）");
+        checkClose(p.feet.z, 4.5f, 1e-5f, "玩家：不按键就不动（z）");
+    }
+
+    // ② 按 W 一秒的位移：起步有加速段，所以是 2.9~3.2 米之间，但绝不该超过满速。
+    //    这条同时钉住两件事：人真的在走（不是没动），以及没有"加速反而更快"的鬼故事。
+    {
+        Player p;
+        InputState in;
+        in.moveForward = 1.0f;
+        run(p, in, 60);
+        const float travelled = 4.5f - p.feet.z;
+        check(travelled > 2.9f && travelled < Player::kWalkSpeed,
+              "玩家：按 W 一秒走 2.9~3.2 米（起步加速，不会超速）");
+        checkClose(p.feet.x, 0.0f, 1e-4f, "玩家：直着走不会横飘");
+    }
+
+    // ③ 往桌子走会停在外沿（正是"没穿模"的定义），再顶两秒也不会往里挤
+    const Entity* desk = w.entity("桌面");
+    check(desk != nullptr, "玩家：找得到「桌面」");
+    if (desk != nullptr) {
+        Player p;
+        InputState in;
+        in.moveForward = 1.0f;
+        const bool bumped = run(p, in, 300);
+        check(bumped, "玩家：撞到桌子会报「撞了」");
+        checkClose(p.feet.z, desk->aabbMax.z + Player::kRadius, 0.01f, "玩家：停在桌子外沿，没穿模");
+        const float stopped = p.feet.z;
+        run(p, in, 120);
+        checkClose(p.feet.z, stopped, 1e-4f, "玩家：顶着桌子不会一点一点往里挤");
+    }
+
+    // ④ 往左走会停在左墙内表面
+    const Entity* leftWall = w.entity("左墙");
+    check(leftWall != nullptr, "玩家：找得到「左墙」");
+    if (leftWall != nullptr) {
+        Player p;
+        InputState in;
+        in.moveRight = -1.0f;
+        run(p, in, 400);
+        checkClose(p.feet.x, leftWall->aabbMax.x + Player::kRadius, 0.01f, "玩家：停在左墙内表面");
+
+        // ⑤ 贴着墙斜着走要"滑过去"而不是"卡死"：x 被墙挡住，z 照走不误。
+        //    第一人称最基本的一条手感，也是最容易写成"撞上就完全不动"的地方。
+        Player q;
+        InputState diag;
+        diag.moveForward = 1.0f;
+        diag.moveRight = -1.0f;
+        run(q, diag, 400);
+        checkClose(q.feet.x, leftWall->aabbMax.x + Player::kRadius, 0.02f, "玩家：斜着顶墙时 x 被挡住");
+        check(q.feet.z < 0.0f, "玩家：斜着顶墙时 z 照样前进（贴墙滑行）");
+    }
+
+    // ⑥ 斜着按两个键不能更快 —— 少了归一化这一步，斜走会快 41%，而人在窗口里
+    //    只会觉得"这游戏有点飘"，根本查不出来
+    {
+        Player a, b;
+        InputState straight;
+        straight.moveForward = 1.0f;
+        InputState diagonal;
+        diagonal.moveForward = 1.0f;
+        diagonal.moveRight = 1.0f;
+        run(a, straight, 60);
+        run(b, diagonal, 60);
+        // 出生点在 (0,0,4.5)：位移就是 (x, 0, z-4.5)
+        const float dStraight = 4.5f - a.feet.z;
+        const float dDiagonal = length(Vec3{b.feet.x, 0.0f, b.feet.z - 4.5f});
+        checkClose(dDiagonal, dStraight, dStraight * 0.02f, "玩家：斜着走不快 1.41 倍（速度归一化）");
+    }
+
+    // ⑦ 鼠标视角：右移 = 右转、下移 = 低头，俯仰有上限，yaw 收在 (-pi, pi]
+    {
+        Player p;
+        InputState in;
+        in.lookDX = 100.0f;
+        in.lookDY = 50.0f;
+        updatePlayer(p, in, w, dt);
+        checkClose(p.yaw, -100.0f * Player::kLookSpeed, 1e-6f, "玩家：鼠标右移 = 向右转");
+        checkClose(p.pitch, -0.04f - 50.0f * Player::kLookSpeed, 1e-6f, "玩家：鼠标下移 = 低头");
+
+        Player up;
+        InputState ceiling;
+        ceiling.lookDY = -1.0e6f;
+        updatePlayer(up, ceiling, w, dt);
+        checkClose(up.pitch, 1.5533f, 1e-3f, "玩家：抬头有上限（不会从头顶翻过去）");
+
+        Player spin;
+        InputState around;
+        around.lookDX = 1.0e9f;
+        updatePlayer(spin, around, w, dt);
+        check(spin.yaw >= -kPi && spin.yaw <= kPi, "玩家：一直往一个方向转，yaw 也不会涨到溢出");
+    }
+
+    // ⑧ --noclip：调试和拍图要能穿墙
+    {
+        Player p;
+        InputState in;
+        in.moveForward = 1.0f;
+        run(p, in, 300);
+        const float stopped = p.feet.z;
+        p.noclip = true;
+        run(p, in, 60);
+        check(p.feet.z < stopped - 0.5f, "玩家：--noclip 下能穿过桌子");
+    }
+
+    // ⑨ dt = 0（时钟没走）不该动，也不该除以零
+    {
+        Player p;
+        InputState in;
+        in.moveForward = 1.0f;
+        updatePlayer(p, in, w, 0.0f);
+        checkClose(p.feet.z, 4.5f, 1e-6f, "玩家：dt=0 时原地不动");
+    }
+}
+
+// 视线射线：按 E 能不能选中东西，全看这里。写得宽松（kPad）是为了让 4cm 厚的
+// 展板、8mm 厚的屏幕也能被选中；但"宽松"不能变成"隔墙也能拿东西"。
+void testRaycast() {
+    World w;
+    buildWorkshop(w);
+
+    // ① 真的"走"到桌前（不是瞬移），再看显示器 → 选中「终端」。
+    //    先用物理走到够得着的地方，再验证视线 —— 于是"桌边停得住"和"看得到终端"
+    //    变成一条链上的两件事，桌子往前挪 10cm 这条就会红。
+    {
+        Player p;
+        InputState in;
+        in.moveForward = 1.0f;
+        for (int i = 0; i < 300; ++i) updatePlayer(p, in, w, 1.0f / 60.0f);
+        p.setLookAt(Vec3{0.0f, 1.035f, -5.28f});
+        const World::RayHit hit = w.castRay(p.eye(), p.forward(), Player::kReach);
+        check(hit.entity == w.findEntity("终端"), "交互：走到桌前看显示器，选中「终端」");
+        check(!hit.blocked, "交互：选中终端时不算被挡住");
+    }
+
+    // ② 出生点直视前方：3.2 米内什么都没有，就该什么都没有（不能乱报）
+    {
+        Player p;
+        p.pitch = 0.0f;
+        const World::RayHit hit = w.castRay(p.eye(), p.forward(), Player::kReach);
+        check(hit.entity < 0 && !hit.blocked, "交互：够不到就返回「什么都没有」");
+    }
+
+    // ③ 隔着墙够不到展板：实心体先挡住射线
+    {
+        Player p;
+        p.feet = Vec3{-8.0f, 0.0f, 1.2f};  // 屋子外面（左墙以西）
+        p.setLookAt(Vec3{-5.94f, 1.9f, 1.2f});
+        const World::RayHit hit = w.castRay(p.eye(), p.forward(), Player::kReach);
+        check(hit.entity < 0 && hit.blocked, "交互：隔着墙够不到东西（先被实心体挡住）");
+    }
+
+    // ④ 走近了就能选中 4cm 厚的展板 —— 就是 kPad 存在的理由
+    {
+        Player p;
+        p.feet = Vec3{-5.0f, 0.0f, 1.2f};
+        p.setLookAt(Vec3{-5.94f, 1.9f, 1.2f});
+        const World::RayHit hit = w.castRay(p.eye(), p.forward(), Player::kReach);
+        check(hit.entity == w.findEntity("展板"), "交互：4cm 厚的展板也能被选中");
+    }
+
+    // ⑤ M3.4 的验收主线：走到展台前看着球按 E。球带的命令用的是 M3.3 就有的
+    //    inspect，所以"交互 → 命令 → 控制台"这条链现在就能端到端验证。
+    {
+        Player p;
+        p.feet = Vec3{2.4f, 0.0f, -1.2f};
+        p.setLookAt(Vec3{3.6f, 1.4f, -1.2f});
+        const World::RayHit hit = w.castRay(p.eye(), p.forward(), Player::kReach);
+        check(hit.entity == w.findEntity("塑料球"), "交互：看着展台上的塑料球能选中它");
+        if (hit.entity >= 0) {
+            check(w.entities[size_t(hit.entity)].command == "inspect 塑料球",
+                  "交互：塑料球带的命令是 inspect 塑料球");
+        }
+
+        // ⑥ 同一个位置，把手伸短到 0.2 米就够不着 —— 确认距离真的在起作用
+        const World::RayHit tooFar = w.castRay(p.eye(), p.forward(), 0.2f);
+        check(tooFar.entity < 0, "交互：超出 reach 就够不到（距离上限有效）");
+    }
+
+    // ⑦ 视线为零（不该发生，但不能崩、不能瞎报）
+    {
+        Player p;
+        const World::RayHit hit = w.castRay(p.eye(), Vec3{0.0f, 0.0f, 0.0f}, Player::kReach);
+        check(hit.entity < 0 && !hit.blocked, "交互：视线为零向量时安全返回");
+    }
+}
+
 // content/*.txt 的自检。这里的重点是「报错质量」和「数据↔场景对得上号」——
 // 改数据的同学没有调试器，他唯一的反馈就是这些报错文字。
 void testContent() {
@@ -1000,6 +1559,8 @@ int runSelfTest() {
     testRasterizer();
     testFont();
     testWorld();
+    testPlayer();
+    testRaycast();
     testContent();
     testConsole();
     if (g_failures == 0) {
@@ -1024,9 +1585,12 @@ int main(int argc, char** argv) {
 
     Scene scene;
     buildScene(scene);
-    if (args.hasCam) scene.camera.position = args.cam;
-    if (args.hasLook) lookAtPoint(scene.camera, args.look);
+    // --cam 给的是"眼睛"的位置（人一米六二高），玩家存的是脚底 —— 差一个身高
+    if (args.hasCam) scene.player.feet = args.cam - Vec3{0.0f, Player::kEyeHeight, 0.0f};
+    if (args.hasLook) scene.player.setLookAt(args.look);
     if (args.fovDeg > 0.0f) scene.camera.fovY = radians(args.fovDeg);
+    scene.player.noclip = args.noclip;
+    syncCamera(scene);
 
     // content/ 是世界的「最后一句话」：先搭场景，再让数据覆盖上去。
     // 这样不管谁（关卡代码、玩家、上一局留下的状态）把值改成了什么，只要文件里写着，
@@ -1050,8 +1614,13 @@ int main(int argc, char** argv) {
                     got ? "content 有变化，已重新应用" : "等待超时，content 没有变化", watcher.polls());
     }
 
+    // --scale 只在开窗时有意义：离屏出图的像素数必须严格等于 --width/--height
+    // （截图比对脚本都指着这个），所以渲染分辨率按模式定下来，不再变。
+    const bool windowed = !args.hasShot;
+    const int renderW = windowed ? args.width / args.scale : args.width;
+    const int renderH = windowed ? args.height / args.scale : args.height;
     Rasterizer rz(args.threads);
-    rz.resize(args.width, args.height);
+    rz.resize(renderW, renderH);
 
     // 控制台：面板本身完全不知道世界是什么，命令通过 handler 走出去（见 console.h 文件头的边界说明）。
     // --cmd 注入走 con.run()，和真人敲回车是同一条路径 —— 离屏截图里能看到的，宣讲现场一定按得出来。
@@ -1060,39 +1629,75 @@ int main(int argc, char** argv) {
     con.print("数媒组工作室 · 控制台。敲 help 看全部命令，R 键重新读 content/。");
     con.print("这个世界由 content/*.txt 决定：改文件 → 敲 reload → 画面当场变。");
 
+    Toast toast;
     int shotIndex = 0;
     auto takeShot = [&]() {
         // 先按「此刻的世界」重绘一帧再存。这样「刚改完数据就拍」拍到的一定是新样子，
         // 而不是上一帧的旧画面 —— 离屏模式（--cmd）里更必须：那时一帧都还没渲染过。
         rz.framebuffer().clear(kClearColor);
         renderFrame(rz, scene, 0.0f);
-        // 故意画在面板之前：存的是「干净的世界」，面板挡住的底部也拍得全。
+        // 故意画在面板/准星之前：存的是「干净的世界」，UI 挡住的底部也拍得全。
         char path[64];
         std::snprintf(path, sizeof(path), "shots/console_%02d.png", ++shotIndex);
         const std::vector<uint8_t> rgb = rz.framebuffer().toRGB8(args.exposure, true);
-        if (writePNG(path, args.width, args.height, rgb.data())) {
+        if (writePNG(path, rz.framebuffer().width, rz.framebuffer().height, rgb.data())) {
             con.printOk(std::string("已存 ") + path);
+            toast.show(std::string("已存 ") + path, 0.0, 1.6);
         } else {
             con.printError(std::string("写 PNG 失败：") + path + "（shots/ 目录在不在？）");
+            toast.show("写 PNG 失败，看看 shots/ 目录在不在", 0.0, 2.4);
         }
     };
     con.setHandler([&](const std::string& line) { runCommand(line, con, scene.world, watcher, takeShot); });
+
+    // 窗口模式：没有 --shot 就开窗。打不开（没桌面、远程会话…）就老老实实退回离屏，
+    // 而不是报个错什么都看不着 —— 这个项目的第一课是"几条命令就能跑起来"。
+    if (windowed) {
+        Window win;
+        if (win.open(args.width, args.height, kWindowTitle)) {
+            return runWindow(args, win, scene, rz, con, takeShot, toast);
+        }
+        std::fprintf(stderr, "[窗口] 开不了窗 —— 这次改用离屏出图（--shot %s）。\n",
+                     args.shot.c_str());
+    }
+
     for (const std::string& c : args.cmds) con.run(c);
     if (!args.cmds.empty()) {
         for (int i = 0; i < con.lineCount(); ++i) std::printf("[console] %s\n", con.lineAt(i).c_str());
     }
 
-    std::printf("[dreamlab-rt] 渲染 %dx%d，%d 帧，线程 %s\n", args.width, args.height, args.frames,
+    std::printf("[dreamlab-rt] 渲染 %dx%d，%d 帧，线程 %s\n", renderW, renderH, args.frames,
                 args.threads > 0 ? std::to_string(args.threads).c_str() : "自动");
+
+    // 离屏的走动：固定 1/60 秒一步。验收要的是"每次都一样"，不是"这台机器多快"。
+    const std::vector<WalkStep> walk = parseWalk(args.walk);
+    const float fixedDt = 1.0f / 60.0f;
 
     double totalMs = 0.0;
     for (int f = 0; f < args.frames; ++f) {
         const float t = float(f) / 60.0f;
+        const InputState in = walkInputAt(walk, f);
+        updatePlayer(scene.player, in, scene.world, fixedDt);
+        syncCamera(scene);
+        if (in.interact) interact(scene, con, toast, 0.0);
+
         const auto t0 = std::chrono::steady_clock::now();
         rz.framebuffer().clear(kClearColor);
         renderFrame(rz, scene, t);
         const auto t1 = std::chrono::steady_clock::now();
         totalMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        if (args.trace) {
+            std::printf("[trace] f=%d pos=(%.3f,%.3f,%.3f) yaw=%.3f pitch=%.3f\n", f,
+                        double(scene.player.feet.x), double(scene.player.feet.y),
+                        double(scene.player.feet.z), double(scene.player.yaw),
+                        double(scene.player.pitch));
+        }
+    }
+
+    // 走动会往控制台里写东西（按 E 的交互），所以帧跑完再打一遍，离屏也能"看见"交互结果
+    if (!walk.empty()) {
+        for (int i = 0; i < con.lineCount(); ++i) std::printf("[console] %s\n", con.lineAt(i).c_str());
     }
 
     const double avgMs = totalMs / double(args.frames);
@@ -1110,7 +1715,7 @@ int main(int argc, char** argv) {
         Font font;
         font.loadFromFile("assets/font/pixel12.bin");
         // 先问面板要占多高，状态栏好让开；画面板本身放在最后（后画的盖住先画的）
-        const int inset = con.panelHeight(font, args.width);
+        const int inset = con.panelHeight(font, renderW);
         if (args.hud) drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset);
         if (con.visible()) con.draw(rz.framebuffer(), font);
         std::printf("[dreamlab-rt] 文字层已叠加（控制台 %d 行，面板 %d px），缺字 %d 个\n", con.lineCount(),
@@ -1118,7 +1723,7 @@ int main(int argc, char** argv) {
     }
 
     const std::vector<uint8_t> rgb = rz.framebuffer().toRGB8(args.exposure, true);
-    if (!writePNG(args.shot.c_str(), args.width, args.height, rgb.data())) {
+    if (!writePNG(args.shot.c_str(), renderW, renderH, rgb.data())) {
         std::fprintf(stderr, "[错误] 写 PNG 失败: %s\n", args.shot.c_str());
         return 1;
     }

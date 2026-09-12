@@ -41,4 +41,11 @@ inline Mat4 entityTransform(const Entity& e) {
 
 inline Vec3 aabbCenter(const Entity& e) { return (e.aabbMin + e.aabbMax) * 0.5f; }
 
+// 点是不是落在实体的世界空间包围盒里。pad 是宽松量：展板只有 4cm 厚，
+// 射线按固定步长走，严格判定会被整个跳过去 —— 症状是"明明对着它，按 E 没反应"。
+inline bool containsPoint(const Entity& e, const Vec3& p, float pad = 0.0f) {
+    return p.x >= e.aabbMin.x - pad && p.x <= e.aabbMax.x + pad && p.y >= e.aabbMin.y - pad &&
+           p.y <= e.aabbMax.y + pad && p.z >= e.aabbMin.z - pad && p.z <= e.aabbMax.z + pad;
+}
+
 }  // namespace dlab

@@ -47,7 +47,8 @@ exit /b 0
 
 :gpp_ready
 echo [build] MinGW g++
-g++ -std=c++17 -O2 -static -o build/dreamlab.exe !SRCS!
+rem user32/gdi32: core\platform_win32.cpp 要开窗、画位图；winmm: 调系统定时器粒度（锁帧用）
+g++ -std=c++17 -O2 -static -o build/dreamlab.exe !SRCS! -luser32 -lgdi32 -lwinmm
 if errorlevel 1 (
     echo [build] compile failed
     exit /b 1

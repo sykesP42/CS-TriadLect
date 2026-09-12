@@ -77,6 +77,20 @@ public:
 
     // 相机能不能站在这里（用于出生点校验和关卡提示）
     bool overlapsSolid(const Vec3& point, float radius) const;
+
+    // 玩家是个盒子（半径 + 身高），不能只用"点 + 半径"测：点半径会把 0.95m 高的
+    // 展台整个漏过去（眼睛在 1.62，半径 0.32 根本够不着台面），人会直接从台子里穿过去。
+    bool overlapsBox(const Vec3& lo, const Vec3& hi) const;
+
+    // 视线射线：从 origin 沿 dir 步进，返回第一个"有交互的实体"。
+    // 撞到不能穿过的实体就停 —— 隔着墙按 E 不该有反应，否则学生会以为命令坏了。
+    struct RayHit {
+        int entity = -1;       // 碰到的实体下标（-1 = 什么都没碰到）
+        bool blocked = false;  // true = 先撞到的是挡路的实体（没有交互可言）
+        float distance = 0.0f;
+        Vec3 point{0.0f, 0.0f, 0.0f};
+    };
+    RayHit castRay(const Vec3& origin, const Vec3& dir, float maxDist, float step = 0.04f) const;
 };
 
 }  // namespace dlab

@@ -115,4 +115,49 @@ bool World::overlapsSolid(const Vec3& point, float radius) const {
     return false;
 }
 
+bool World::overlapsBox(const Vec3& lo, const Vec3& hi) const {
+    for (const Entity& e : entities) {
+        if (!e.solid) continue;
+        if (hi.x < e.aabbMin.x || lo.x > e.aabbMax.x) continue;
+        if (hi.y < e.aabbMin.y || lo.y > e.aabbMax.y) continue;
+        if (hi.z < e.aabbMin.z || lo.z > e.aabbMax.z) continue;
+        return true;
+    }
+    return false;
+}
+
+World::RayHit World::castRay(const Vec3& origin, const Vec3& dir, float maxDist, float step) const {
+    RayHit hit;
+    if (step <= 0.0f) step = 0.04f;
+    const Vec3 d = normalize(dir);
+    if (length(d) < 0.5f) return hit;  // 视线长度为零（不该发生），当作什么都没看
+
+    // 交互判定给一点宽松量：展板只有 4cm 厚、屏幕 8mm，严格判"点在盒子里"
+    // 会因为步长跳过它们 —— 学生看到的是"明明对着展板，按 E 却没反应"。
+    const float kPad = 0.06f;
+
+    for (float t = step; t <= maxDist; t += step) {
+        const Vec3 p = origin + d * t;
+        for (size_t i = 0; i < entities.size(); ++i) {
+            const Entity& e = entities[i];
+            if (e.visible && !e.prompt.empty() && containsPoint(e, p, kPad)) {
+                hit.entity = int(i);
+                hit.distance = t;
+                hit.point = p;
+                return hit;
+            }
+        }
+        for (const Entity& e : entities) {
+            if (!e.solid) continue;
+            if (containsPoint(e, p, 0.0f)) {
+                hit.blocked = true;  // 撞到墙/桌子：后面的东西都看不到了
+                hit.distance = t;
+                hit.point = p;
+                return hit;
+            }
+        }
+    }
+    return hit;
+}
+
 }  // namespace dlab
