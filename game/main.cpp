@@ -2513,9 +2513,19 @@ int main(int argc, char** argv) {
             // "脚本按得出来的"和"宣讲现场真人按得出来的"才是同一条路。
             for (const std::string& c : args.cmds) con.run(c);
             const int rc = runWindow(args, win, scene, rz, con, takeShot, toast, judge, rt);
+            // --level N 是**临时覆盖**（--help 里写着"直接站在第 N 关，不看存档"），
+            // 所以它也不该往存档里写 —— 对称。
+            //
+            // 这个坑真踩过：量帧率时跑了一批开窗的 `--level 3`，把存档的关卡号从第 1 关
+            // 顶到了第 3 关，下次启动人就莫名其妙站在第 3 关了。调试参数不该有副作用。
+            if (args.level >= 0) {
+                std::printf("[存档] 这次带了 --level %d（临时覆盖），不写存档 —— 你的进度没被动过\n",
+                            args.level);
+                return rc;
+            }
             // 人一按 ESC / 点叉就存一次档：不搞"找到存档点才能存"，那套仪式感是给
             // 长流程 RPG 的。这里存档的意义只有一条 —— 下次打开还站在昨天那个位置、
-            // 昨天改过的 content/ 也还在。存的是「离开时那一刻」的玩家位姿。
+            // 昨天改过的 content/ 也还在。存的是「离开那一刻」的玩家位姿。
             SaveData sv;
             sv.level = rt.index;  // 走到哪一关了
             sv.goals = rt.goals;  // 哪几关过了（决定下次进门要不要再欢呼一次）
