@@ -35,8 +35,8 @@ const Vec3 kClearColor{0.012f, 0.014f, 0.02f};
 
 // 开窗模式的标题和常驻提示。提示直接写在画面里而不是只写在 README ——
 // 第一次运行的人会先看画面，不会先看文档。
-const char* kWindowTitle = "dreamlab-rt —— 数媒组工作室（WASD 走 · 鼠标看 · E 交互 · ~ 控制台 · F2 拍照）";
-const char* kWindowHint = "WASD 走 · 鼠标看 · E 交互 · ~ 控制台 · F2 拍照 · Esc 退出";
+const char* kWindowTitle = "dreamlab-rt —— 数媒组工作室（WASD 走 · 鼠标看 · E 交互 · F2 拍照）";
+const char* kWindowHint = "WASD 走 · 鼠标看 · E 交互 · F2 拍照 · Esc 退出";
 const char* kAutopilotHint = "自动演示：--walk 正在接管输入（想自己走就别给 --walk）";
 
 // ---------------------------------------------------------------- 命令行
@@ -83,7 +83,8 @@ void printUsage() {
     std::printf(
         "dreamlab-rt —— 逐梦实验室数媒组示例项目\n"
         "\n"
-        "不带参数直接运行 = 开窗打游戏：WASD 走，鼠标看，E 交互，~ 开控制台，F2 拍照，Esc 退出。\n"
+        "不带参数直接运行 = 开窗打游戏：WASD 走，鼠标看，E 交互，F2 拍照，Esc 退出。\n"
+        "控制台不是快捷键叫出来的 —— 走到桌子前的终端按 E 才打得开。\n"
         "给了 --shot 就是离屏模式：不开窗，渲完写一张 PNG（脚本、验收、无桌面环境都用这个）。\n"
         "\n"
         "用法: dreamlab [选项]\n"
@@ -921,27 +922,31 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
                 break;  // 控制台没开 → Esc 退出
             }
         }
-        const bool tildePressed = pi.pressed[int(Key::Tilde)];
-        if (tildePressed) {
-            con.toggle();
-            win.setMouseCaptured(!con.visible());
+        // ~ 不再是"叫出控制台"的快捷键：控制台是世界里的那台终端，得走过去按 E 才打得开
+        // （见 interact()）。这样它就不是一个悬在画面上的调试窗口，而是房间里的一个东西 ——
+        // 和"走到终端前按 E，游戏告诉你该改哪个文件"这条核心循环对得上。
+        //
+        // 但按了要有回声：本项目的规矩是"按一下没反应"最容易让人以为程序坏了。
+        if (pi.pressed[int(Key::Tilde)]) {
+            toast.show("控制台要到桌子前的终端那儿开 —— 走近了按 E", now);
         }
         if (pi.pressed[int(Key::F2)]) takeShot();
 
         // ---- 控制台开着的时候，键盘全给它。
         // 不然敲 ambient 里的 a/w/d 会顺手把人挪走 —— 那是第一次用就会骂人的 bug。
         if (con.visible()) {
-            // 按 ~ 的那一下，WM_CHAR 也会送进来一个 '~'（0x7E 落在可打印区间里），
-            // 不挡掉的话新开的控制台里会凭空多出一个 "~"。
-            if (!tildePressed) {
-                for (char c : pi.typed) con.typeChar(c);
+            for (char c : pi.typed) {
+                // '~' 不再是入口了，但 WM_CHAR 照样会送它进来（0x7E 落在可打印区间里）。
+                // 命令里没有它，直接丢掉，免得输入行里凭空多出一个字符。
+                if (c == '~') continue;
+                con.typeChar(c);
             }
             if (pi.pressed[int(Key::Backspace)]) con.backspace();
             if (pi.pressed[int(Key::Enter)]) con.submit();
             win.setMouseCaptured(false);  // 打字要看得见鼠标，也不能让视角跟着甩
         } else if (!autopilot) {
             if (pi.pressed[int(Key::R)]) con.run("reload");  // R = 重读 content/（和 --cmd reload 同一条路）
-            // 控制台关着的时候，可打印字符一律当没看见 —— 只认上面那个 ~。
+            // 控制台关着的时候，可打印字符一律当没看见 —— 它只能在终端那儿用 E 打开。
             //
             // 这里原先写的是"随便敲一个可打印字符就把控制台顶开"，为的是省掉
             // "新生得先知道 ~ 在哪"这一步。想法没错，但 W/A/S/D 本身就是可打印

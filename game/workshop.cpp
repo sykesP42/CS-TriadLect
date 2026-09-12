@@ -170,7 +170,7 @@ Workshop buildWorkshop(World& w) {
 
     // 终端：显示器 + 屏幕。玩家走到它面前按 E，就是第 0 关的开场
     Entity terminal = makeEntity("终端", mMonitor, ws.matStone, Vec3{0.0f, 1.035f, -5.28f});
-    terminal.prompt = "按 E 使用终端";
+    terminal.prompt = "按 E 使用终端（控制台在这里）";
     terminal.command = "use terminal";
     ws.entTerminal = w.addEntity(terminal);
 
