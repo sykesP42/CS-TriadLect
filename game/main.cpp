@@ -881,7 +881,8 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
                 break;  // 控制台没开 → Esc 退出
             }
         }
-        if (pi.pressed[int(Key::Tilde)]) {
+        const bool tildePressed = pi.pressed[int(Key::Tilde)];
+        if (tildePressed) {
             con.toggle();
             win.setMouseCaptured(!con.visible());
         }
@@ -890,18 +891,27 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         // ---- 控制台开着的时候，键盘全给它。
         // 不然敲 ambient 里的 a/w/d 会顺手把人挪走 —— 那是第一次用就会骂人的 bug。
         if (con.visible()) {
-            for (char c : pi.typed) con.typeChar(c);
+            // 按 ~ 的那一下，WM_CHAR 也会送进来一个 '~'（0x7E 落在可打印区间里），
+            // 不挡掉的话新开的控制台里会凭空多出一个 "~"。
+            if (!tildePressed) {
+                for (char c : pi.typed) con.typeChar(c);
+            }
             if (pi.pressed[int(Key::Backspace)]) con.backspace();
             if (pi.pressed[int(Key::Enter)]) con.submit();
             win.setMouseCaptured(false);  // 打字要看得见鼠标，也不能让视角跟着甩
         } else if (!autopilot) {
             if (pi.pressed[int(Key::R)]) con.run("reload");  // R = 重读 content/（和 --cmd reload 同一条路）
-            if (!pi.typed.empty()) {
-                // 二话不说直接开打 = 想敲命令（不用先知道 ~ 在哪），第一个字符得留住
-                con.setVisible(true);
-                for (char c : pi.typed) con.typeChar(c);
-                win.setMouseCaptured(false);
-            }
+            // 控制台关着的时候，可打印字符一律当没看见 —— 只认上面那个 ~。
+            //
+            // 这里原先写的是"随便敲一个可打印字符就把控制台顶开"，为的是省掉
+            // "新生得先知道 ~ 在哪"这一步。想法没错，但 W/A/S/D 本身就是可打印
+            // 字符（WM_CHAR 收 0x20~0x7E，见 platform_win32.cpp）：于是按 W 想往前
+            // 走，会当场把控制台弹出来，接着 con.visible() 为真、玩家输入被清空,
+            // 一步都走不动 —— 整个 WASD 全废。
+            //
+            // 这个 bug 躲了很久，因为离屏那套验证全走 --walk，而 --walk 会置
+            // autopilot，刚好跳过这一支（见上面的 else if (!autopilot)），
+            // 键盘这条路没有任何自动化覆盖。改了这里请手动开窗试一下 WASD。
         }
 
         // ---- 走一步
