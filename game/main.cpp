@@ -287,7 +287,8 @@ void syncCamera(Scene& s) {
 // 离屏 --shot 默认不给（调用方传 false）：截图是素材和逐像素比对用的，"干净"比
 // "像玩家看到的"更要紧；而且评委机位那几张对比图一旦多一圈光斑，计划文档里
 // 记录过的画面对不上号。
-void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds, bool playerGlow = false) {
+void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds, bool playerGlow = false,
+                 const Entity* highlight = nullptr) {
     (void)timeSeconds;
     Light glow;
     const Light* extra = nullptr;
@@ -300,7 +301,7 @@ void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds, bool playerG
         glow.radius = 2.2f;
         extra = &glow;
     }
-    s.world.render(rz, s.camera, extra);
+    s.world.render(rz, s.camera, extra, highlight);
 }
 
 // ---------------------------------------------------------------- 屏幕上的小提示
@@ -396,10 +397,19 @@ void mouseToFramebuffer(float& mx, float& my, int clientW, int clientH, int fbW,
     my *= float(fbH) / float(clientH);
 }
 
-std::string nextStepText(float progress) {
-    if (progress >= 1.0f) return std::string();  // 过了就没什么下一步了
-    if (progress <= 0.0f) return "走到桌子前的终端，看着它按 E";
-    return "照着终端说的改，进度条会当场动";
+// 把"当前世界的状态"装成关卡要的那个视图 —— 关卡自己算下一步要用它。
+LevelView makeView(const World& w, const Judge& judge, const LevelStatus& st) {
+    return LevelView{w, judge.frame(), st.luminance, st.lightLuminance};
+}
+
+// 「下一步该干什么」—— **由关卡自己算**（见 Level::nextStep）。
+//
+// 以前这里是"只看进度"：0% 说去终端、有进度就说"照着终端说的改"。太粗 ——
+// 进度条说"走到 40% 了"，可那 40% 是"三件事里的哪一件"？只有关卡自己答得上来，
+// 它本来就拆过判定（灯罩亮没亮 / 位置对不对 / 亮度够不够）。
+std::string nextStepFor(const Level& lv, const LevelView& view) {
+    if (lv.nextStep == nullptr) return std::string();
+    return lv.nextStep(view).text;
 }
 
 void drawGoalPanel(Framebuffer& fb, const Font& font, int x, int y, const GoalPanel& goal) {
@@ -554,7 +564,7 @@ std::string joinNames(const std::vector<std::string>& v) {
 // 打印的是同一段话 —— 学生从哪条路问进来，看到的答案都一样。
 // 打印顺序按"读下去"的顺序：标题 → 目标 → 提示 → 进度。
 // 最后一行是进度，因为控制台只显示最近的几行，这样它一定留在眼前。
-void printLevelBriefing(Console& con, const LevelRuntime& rt) {
+void printLevelBriefing(Console& con, const LevelRuntime& rt, const World& w, const Judge& judge) {
     const Level& lv = levelAt(rt.index);
     char buf[192];
     con.printOk(lv.title);
@@ -582,6 +592,15 @@ void printLevelBriefing(Console& con, const LevelRuntime& rt) {
         std::snprintf(buf, sizeof(buf), "现在 %d%%", progressPercent(rt.status));
     }
     con.print(buf);
+
+    // 「下一步」—— 和 HUD 上那行是**同一个来源**（关卡自己算的），两处说法不会打架。
+    // 为什么终端也要念：零基础的人看完题面还是不知道"我现在该干嘛"，而题面写的是
+    // 整件事的做法，不是"你卡在哪一步"。这一行补的就是那个 —— 世界一变它当场就变。
+    const std::string step = nextStepFor(lv, makeView(w, judge, rt.status));
+    if (!step.empty()) {
+        con.printOk("下一步：");
+        con.print("  " + step);
+    }
 }
 
 void runCommand(const std::string& line, Console& con, World& world, ContentWatcher& watcher,
@@ -627,14 +646,14 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
             rt.status = judge.evaluate(world, levelAt(rt.index));
             con.printOk("跳到" + std::string(levelAt(rt.index).title));
         }
-        printLevelBriefing(con, rt);
+        printLevelBriefing(con, rt, world, judge);
         return;
     }
 
     if (cmd == "use") {
         // 现在能"用"的东西只有终端 —— 它是关卡系统的公告板。所以两条命令
         // 打印同一段话：E 键那条路是"跟终端说话"，level 是手动查。
-        printLevelBriefing(con, rt);
+        printLevelBriefing(con, rt, world, judge);
         return;
     }
 
@@ -772,7 +791,18 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
                               double(length(main.position - mount)));
                 con.print(buf);
             }
-            con.print("  两样得一起弄：lights.txt 的 pos/intensity + materials.txt 里 material lamp 的 emissive");
+            // 这里原来写的是"两样得一起弄：lights.txt 的 pos/intensity + materials.txt 里
+            // material lamp 的 emissive" —— 实测被提出来过："两样是哪两样？改成什么？"
+            // 那是行话里的"你懂的"，而看这块铭牌的人恰恰是最不懂的人。
+            // 现在直接复用关卡自己算的"下一步"：该改哪个文件、哪个字段、改成什么，说全。
+            const std::string step =
+                nextStepFor(levelAt(rt.index), makeView(world, judge, rt.status));
+            if (step.empty()) {
+                con.print("  这一步已经做完了。");
+            } else {
+                con.printOk("下一步：");
+                con.print("  " + step);
+            }
             return;
         }
         if (what == "board") {
@@ -1014,7 +1044,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
             // 不重判的话会有一帧"标题是下一关、进度条还是上一关的 100%"。
             rt.status = judge.evaluate(scene.world, levelAt(rt.index));
             con.print("下面是下一关 —— 想重看哪一关的要求，敲 level（或走到终端按 E）。");
-            printLevelBriefing(con, rt);
+            printLevelBriefing(con, rt, scene.world, judge);
         } else {
             con.print("而且这是最后一关 —— 你已经把整条管线亲手走通一遍了。");
         }
@@ -1191,21 +1221,26 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
             }
         }
 
+        // ---- 「现在差哪一步」：关卡自己算（见 Level::nextStep）。
+        // 一句话给 HUD，一个实体名给渲染描边。每帧算一次 —— 世界一变它当场就跟上。
+        const Level& shown = levelAt(rt.index);
+        const LevelView stepView = makeView(scene.world, judge, rt.status);
+        const NextStep step = shown.nextStep != nullptr ? shown.nextStep(stepView) : NextStep{};
+        const Entity* focus =
+            step.focusEntity.empty() ? nullptr : scene.world.entity(step.focusEntity);
+
         // ---- 画一帧
         rz.framebuffer().clear(kClearColor);
-        renderFrame(rz, scene, float(now), true);  // 开窗这一路才给随身微光
+        renderFrame(rz, scene, float(now), true, focus);  // 开窗这一路才给随身微光 + 描边
 
         // 叠字层：HUD → 准星 → 控制台面板（后画的盖住先画的）
-        // 面板上的那一关要重新取一次：上面那段可能刚把 rt.index 推到下一关，
-        // 用旧引用的话，会出现"标题还是上一关、进度条已经是下一关"的一帧。
-        const Level& shown = levelAt(rt.index);
         const int inset = con.panelHeight(font, rz.framebuffer().width, rz.framebuffer().height);
         GoalPanel goal;
         goal.title = shown.title;
         goal.goal = shown.goal;
         goal.progress = rt.status.progress;
         goal.passed = rt.status.passed();
-        goal.nextStep = nextStepText(rt.status.progress);
+        goal.nextStep = step.text;
         drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint, goal);
         // 菜单开着时不画准星：它和它的提示文字会从菜单的半透明遮罩下透出来，糊在面板中间。
         // （HUD 留着 —— 它在面板外面，被压暗之后正好当背景信息。）
@@ -3187,7 +3222,8 @@ int main(int argc, char** argv) {
             goal.goal = lv.goal;
             goal.progress = rt.status.progress;
             goal.passed = rt.status.passed();
-            goal.nextStep = nextStepText(rt.status.progress);
+            // 离屏出图也带上"下一步"（截图是拿去当素材/验收的，和玩家看到的应当一致）
+            goal.nextStep = nextStepFor(lv, makeView(scene.world, judge, rt.status));
             if (args.hud)
                 drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset,
                         kWindowHint, goal);

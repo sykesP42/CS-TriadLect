@@ -12,6 +12,8 @@
 //  为什么容差不是 0：这一关要教的是"看起来一样"，不是"一字不差"。0.92 写成 0.9
 //  眼睛根本分不出来，却要判错，那是拿浮点在为难人。容差取到"明显不一样的数
 //  一定被挡住、手抖一位小数一定放行"的位置。
+#include <cstdio>
+
 #include "../level.h"
 
 namespace dlab {
@@ -74,6 +76,42 @@ float progressMaterial(const LevelView& view) {
     return float(matched) / 3.0f;
 }
 
+// 「现在差哪一步」—— 这一关**点名**：哪个球还不对、哪个数该改成什么。
+// 零基础的人看到进度条停在 33% 只会问"是哪一个错了"，这里直接答，而且给出目标值，
+// 省得他回头翻提示、或者把三个球挨个试一遍。
+// 只报**第一个**不对的球：一次说一件，比一口气列三件好做。
+NextStep nextStepMaterial(const LevelView& view) {
+    const World& w = view.world;
+    for (const Pair& p : kPairs) {
+        if (ballMatches(w, p)) continue;
+
+        const int a = w.findMaterial(p.ball);
+        const int b = w.findMaterial(p.ref);
+        if (a < 0 || b < 0) {
+            return NextStep{std::string("content/materials.txt 里找不到「") + p.ball + "」那一段", ""};
+        }
+        const Material& m = w.materials[size_t(a)];
+        const Material& r = w.materials[size_t(b)];
+        char buf[200];
+        if (!nearf(m.albedo.x, r.albedo.x, kAlbedoTol) ||
+            !nearf(m.albedo.y, r.albedo.y, kAlbedoTol) ||
+            !nearf(m.albedo.z, r.albedo.z, kAlbedoTol)) {
+            std::snprintf(buf, sizeof(buf),
+                          "「%s」的颜色不对：materials.txt 里把它的 albedo 改成 %.2f %.2f %.2f", p.cn,
+                          double(r.albedo.x), double(r.albedo.y), double(r.albedo.z));
+        } else if (!nearf(m.roughness, r.roughness, kRoughTol)) {
+            std::snprintf(buf, sizeof(buf), "「%s」的表面还不对：把它的 roughness 改成 %.2f", p.cn,
+                          double(r.roughness));
+        } else {
+            std::snprintf(buf, sizeof(buf), "「%s」的金属度还不对：把它的 metallic 改成 %.2f", p.cn,
+                          double(r.metallic));
+        }
+        // focusEntity 用中文名 —— 那才是场景里那个实体的名字（orbName 那几个）
+        return NextStep{buf, p.cn};
+    }
+    return NextStep{};
+}
+
 // 评委机位：站在展台正对面，一列六个球（三个球 + 三个样板）全进画面。
 // 为什么站得比第 1 关远：这一关要一眼看全"球 vs 样板"，缺一个都对比不起来。
 // 展台在 x=3.6 排成一列，z 从 -3.0（镜面）到 1.6（陶土样板）跨了 4.6 米，
@@ -119,6 +157,7 @@ const Level& make() {
             "这两个数你能凭画面反推出来了，这就是这份工作最核心的手感。";
         l.judge = judgeCamera();
         l.progress = progressMaterial;
+        l.nextStep = nextStepMaterial;
         return l;
     }();
     return lv;

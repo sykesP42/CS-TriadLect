@@ -85,7 +85,12 @@ public:
     //
     // viewLight 是"只画给玩家看"的一盏补光（随身微光），默认不给。
     // 评委拍照（Judge::evaluate）必须是默认值 —— 多一盏灯就会把四关的标定垫高。
-    void render(Rasterizer& rz, const Camera& cam, const Light* viewLight = nullptr) const;
+    //
+    // highlight 是"本关下一步要动的那个东西"，画面里给它描一圈边，指"看这儿"
+    // （第 1 关的吊灯就靠它 —— 一间黑屋子里，得让人知道该往哪走）。
+    // 同样只进玩家画面：评委拍照和离屏出图都是默认值。
+    void render(Rasterizer& rz, const Camera& cam, const Light* viewLight = nullptr,
+                const Entity* highlight = nullptr) const;
 
     // 相机能不能站在这里（用于出生点校验和关卡提示）
     bool overlapsSolid(const Vec3& point, float radius) const;

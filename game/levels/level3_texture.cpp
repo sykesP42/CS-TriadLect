@@ -60,6 +60,31 @@ float progressTexture(const LevelView& view) {
     return p;
 }
 
+// 「现在差哪一步」—— 三个词依次来，错哪个报哪个。
+// 进度条只会说"走到 40% 了"，可 40% 是"三件里的哪一件"？这里直接答。
+// 地板不给描边：它铺满整个画面，描了等于没描。
+NextStep nextStepTexture(const LevelView& view) {
+    const World& w = view.world;
+    const int idx = w.findMaterial("floor");
+    if (idx < 0) {
+        return NextStep{"content/textures.txt 里 floor 那一段不见了 —— 把它加回来", ""};
+    }
+    const Material& m = w.materials[size_t(idx)];
+
+    if (!nearf(m.uvScale.x, kTargetScale, kScaleTol) ||
+        !nearf(m.uvScale.y, kTargetScale, kScaleTol)) {
+        return NextStep{"先改平铺：content/textures.txt 里 floor 的 uvscale 从 1 1 改成 4 4", ""};
+    }
+    if (m.wrapMode != kWrapRepeat) {
+        return NextStep{"平铺对了。再把 wrap 从 clamp 改成 repeat —— 地板会从一片纯色变回格子",
+                        ""};
+    }
+    if (m.filterMode != kFilterBilinear) {
+        return NextStep{"最后一步：把 filter 从 nearest 改成 bilinear（远处的地板就不闪了）", ""};
+    }
+    return NextStep{};
+}
+
 // 评委机位：站在房间这一头往下看地板 —— 这一关的主角就是地板，别的东西都只是参照。
 //   · 高度 3.0（天花板下 0.4 米）：俯角够大，画面里八成是地板，而不是墙；
 //   · 视场角 50 度、俯角 28 度：从脚前 2.3 米一直看到对面墙角 —— 8 米深的地板
@@ -103,6 +128,7 @@ const Level& make() {
             "接下来想继续玩：改 content/*.txt 自己配色，或者去读 core/raster.cpp（那 300 行是引擎的心脏）。";
         l.judge = judgeCamera();
         l.progress = progressTexture;
+        l.nextStep = nextStepTexture;
         return l;
     }();
     return lv;

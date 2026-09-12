@@ -32,6 +32,20 @@ struct LevelView {
     float lightLuminance;
 };
 
+// "下一步该干什么" —— **关卡自己算**，因为它本来就拆过判定（灯罩亮没亮、位置对不对、
+// 亮度够不够）。零基础的人光看进度条不知道下一步该动什么：进度条说"走到 35% 了"，
+// 可那 35% 是"三件事里的哪一件"？只有关卡自己答得上来。
+//
+// 这不是通用客套话，是每关自己的分解动作 —— 所以它和 passNote 一样写在关卡里。
+// 用 std::string 不用 const char*：第 2 关要**点名是哪个球、哪个数不对**
+// （"「陶土球」还不对：albedo 该改成 0.74 0.53 0.32"），那是运行时拼出来的。
+struct NextStep {
+    std::string text;         // 一句话。HUD 上直接显示，终端也打一遍
+    std::string focusEntity;  // 这一步要动的东西（世界里的实体名）。
+                              // 画面里会给它描一圈边，指"看这儿"。
+                              // 空 = 不描（比如第 0 关要改的是代码文件，不在场景里）
+};
+
 // 一关。全是"描述"，没有一个字是"流程"—— 流程在 main.cpp 里。
 struct Level {
     const char* id = "";                          // "dark"：--level 和存档记的是它，不是中文标题
@@ -44,6 +58,7 @@ struct Level {
     const char* passNote = "";
     Camera judge;                                 // 评委机位
     float (*progress)(const LevelView&) = nullptr;  // 0 = 刚进门，1 = 过关
+    NextStep (*nextStep)(const LevelView&) = nullptr;  // 现在差哪一步（见 NextStep）
 };
 
 // 一次判定的结果

@@ -42,6 +42,15 @@ float progressDark(const LevelView& view) {
     return (view.luminance - kDarkLuminance) / bar;
 }
 
+// 这一关只有一步，所以"下一步"没什么分支 —— 房间亮了就没事了。
+// 要动的是**代码文件**、不在场景里，所以没有要描边的实体。
+NextStep nextStepDark(const LevelView& view) {
+    if (progressDark(view) >= 1.0f) return NextStep{};
+    return NextStep{"改 game/shaders/lighting.cpp 里的 kAmbientStrength："
+                    "把 0.0f 改成 0.6f，存盘 → 双击 build.bat → 再运行 dreamlab.exe",
+                    ""};
+}
+
 // 提示是写给**零基础的人**看的 —— 他们不知道 .cpp 是什么、不知道用什么打开它，
 // 也不知道"存盘"和"重新编译"具体是哪个动作。所以宁可啰嗦，也要写成能照着做的步骤。
 // 注意别写死行号（"第 40 行"会漂），教他们搜关键词反而更耐用。
@@ -78,6 +87,7 @@ const Level& levelDark() {
             "改代码不用怕丢进度。";
         l.judge = judgeCamera();
         l.progress = progressDark;
+        l.nextStep = nextStepDark;
         return l;
     }();
     return lv;

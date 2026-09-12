@@ -89,6 +89,32 @@ float progressFirstLight(const LevelView& view) {
     return p;
 }
 
+// 「现在差哪一步」。这一关有三件事，进度条只会告诉你"走到 40% 了"，
+// 但零基础的人需要知道**是哪一件没做完**。这里把判定拆出来的三个条件依次问一遍，
+// 谁没过就报谁 —— 而且给出具体数字，不用他回头翻提示。
+//
+// focusEntity = "吊灯"：这三步全都围着吊灯转（灯罩挂在它上面、光要装回它里面），
+// 所以整关都给它描边，等于在黑暗里指"看那儿"。
+NextStep nextStepFirstLight(const LevelView& view) {
+    const World& w = view.world;
+
+    if (shadeGlow(w) < kShadeOn) {
+        return NextStep{"改 content/materials.txt 里 material lamp 的 emissive："
+                        "0 0 0 → 4.2 3.8 3.0（灯罩得自己会亮）",
+                        "吊灯"};
+    }
+    if (hangDistance(w) > kHangTolerance) {
+        return NextStep{"灯罩亮了。现在把光挪回吊灯里：content/lights.txt 里 light 0 的 pos "
+                        "改成 2.20 2.90 1.20（它现在还在门口）",
+                        "吊灯"};
+    }
+    if (view.lightLuminance < kBrightLuminance) {
+        return NextStep{"位置对了，就是还不够亮：把 light 0 的 intensity 从 0 拧到 48",
+                        "吊灯"};
+    }
+    return NextStep{};
+}
+
 // 评委机位：站在展厅这一头，正对三个展台。
 //   · 只有 +x 一个方向，三个展台沿 z 排开 —— 画面里是"三个球并排"，不是叠在一起；
 //   · 视野收到 42 度（比玩家的 62 度窄），把墙和天花板的占比压下去，
@@ -131,6 +157,7 @@ const Level& make() {
             "距离翻一倍就只剩四分之一。位置比强度重要，这是灯光这行的第一课。";
         l.judge = judgeCamera();
         l.progress = progressFirstLight;
+        l.nextStep = nextStepFirstLight;
         return l;
     }();
     return lv;
