@@ -1,0 +1,61 @@
+// 材质与光源 —— 渲染器与"学生着色器"之间的数据契约。
+// 这里的字段就是技术美术每天在引擎里调的那几个参数：albedo / roughness / metallic。
+#pragma once
+
+#include "texture.h"
+#include "vec.h"
+
+namespace dlab {
+
+struct Material {
+    Vec3 albedo{0.8f, 0.8f, 0.8f};  // 基础色（线性）
+    float roughness = 0.35f;        // 粗糙度：0 = 镜面，1 = 完全漫反射
+    float metallic = 0.0f;          // 金属度：0 = 绝缘体（塑料/木头），1 = 金属
+    Vec3 emissive{0.0f, 0.0f, 0.0f};// 自发光（灯罩、屏幕、字标）
+    const Texture* albedoTexture = nullptr;
+
+    Vec2 uvScale{1.0f, 1.0f};
+    Vec2 uvOffset{0.0f, 0.0f};
+    int wrapMode = kWrapRepeat;
+    int filterMode = kFilterBilinear;
+
+    // 取某一个 uv 处的漫反射色（有贴图就采样，没有就用常量 albedo）
+    Vec3 albedoAt(Vec2 uv) const {
+        if (!albedoTexture || !albedoTexture->valid()) return albedo;
+        const Vec2 scaled{uv.x * uvScale.x + uvOffset.x, uv.y * uvScale.y + uvOffset.y};
+        return albedo * albedoTexture->sample(scaled, wrapMode, filterMode);
+    }
+};
+
+struct Light {
+    Vec3 position{0.0f, 2.0f, 0.0f};
+    Vec3 color{1.0f, 1.0f, 1.0f};
+    float intensity = 10.0f;
+    float radius = 0.2f;  // 灯的物理尺寸，用于高光形状（软盒灯近似）
+};
+
+// 一个着色点的所有信息（由光栅化器插值好后递给学生写的着色函数）
+struct Surface {
+    Vec3 position;    // 世界空间坐标
+    Vec3 normal;      // 世界空间法线（已归一化）
+    Vec2 uv;
+    Vec3 color{1.0f, 1.0f, 1.0f};  // 顶点色
+    const Material* material = nullptr;
+};
+
+// 全局光照环境（逐像素都相同）
+struct ShadeEnv {
+    // 环境光基础亮度（由世界/关卡给出，来自 content/ 数据）。0 = 漆黑的房间。
+    // 着色器会再乘一个自己的系数，学生两条路都能改。
+    Vec3 ambient{0.0f, 0.0f, 0.0f};
+    // 廉价的环境光照：用"上半球的天光 + 下半球的地面反弹光"替代一张真正的 HDR 环境贴图。
+    // 别小看它 —— 金属之所以看起来像金属，靠的就是它反射出了周围的环境。
+    Vec3 skyColor{0.46f, 0.56f, 0.78f};
+    Vec3 groundColor{0.22f, 0.18f, 0.15f};
+
+    const Light* lights = nullptr;
+    int lightCount = 0;
+    Vec3 cameraPos{0.0f, 0.0f, 0.0f};
+};
+
+}  // namespace dlab

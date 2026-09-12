@@ -1,0 +1,10 @@
+build/
+build-cmake/
+saved/
+shots/
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.o
+.DS_Store
