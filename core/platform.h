@@ -29,6 +29,8 @@ enum class Key {
     Down,
     Left,
     Right,
+    PageUp,    // 控制台翻页（面板显示不下的行可以往回看）
+    PageDown,
     F2,
     Esc,
     Enter,

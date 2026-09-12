@@ -60,6 +60,8 @@ Key vkToKey(WPARAM vk) {
         case VK_DOWN: return Key::Down;
         case VK_LEFT: return Key::Left;
         case VK_RIGHT: return Key::Right;
+        case VK_PRIOR: return Key::PageUp;    // PgUp
+        case VK_NEXT: return Key::PageDown;   // PgDn
         case VK_F2: return Key::F2;
         case VK_ESCAPE: return Key::Esc;
         case VK_RETURN: return Key::Enter;

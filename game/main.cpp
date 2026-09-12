@@ -1062,6 +1062,12 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
             }
             if (pi.pressed[int(Key::Backspace)]) con.backspace();
             if (pi.pressed[int(Key::Enter)]) con.submit();
+            // 翻看历史：面板显示不下的行不是丢了，是视口钉在末尾 —— 关卡的提示是
+            // 编号步骤，"看不到第一步"等于没有提示。↑↓ 一行一行，PgUp/PgDn 一整屏。
+            if (pi.pressed[int(Key::Up)]) con.scrollBy(1);
+            if (pi.pressed[int(Key::Down)]) con.scrollBy(-1);
+            if (pi.pressed[int(Key::PageUp)]) con.scrollBy(Console::pageRows());
+            if (pi.pressed[int(Key::PageDown)]) con.scrollBy(-Console::pageRows());
             win.setMouseCaptured(false);  // 打字要看得见鼠标，也不能让视角跟着甩
         } else if (!autopilot) {
             if (pi.pressed[int(Key::R)]) con.run("reload");  // R = 重读 content/（和 --cmd reload 同一条路）
@@ -1147,7 +1153,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         // 面板上的那一关要重新取一次：上面那段可能刚把 rt.index 推到下一关，
         // 用旧引用的话，会出现"标题还是上一关、进度条已经是下一关"的一帧。
         const Level& shown = levelAt(rt.index);
-        const int inset = con.panelHeight(font, rz.framebuffer().width);
+        const int inset = con.panelHeight(font, rz.framebuffer().width, rz.framebuffer().height);
         GoalPanel goal;
         goal.title = shown.title;
         goal.goal = shown.goal;
@@ -2348,7 +2354,7 @@ void testConsole() {
     fb3.resize(240, 200);
     fb3.clear(Vec3{1.0f, 1.0f, 1.0f});
     shortCon.draw(fb3, font);
-    check(topChangedRow(fb3) == fb3.height - shortCon.panelHeight(font, fb3.width),
+    check(topChangedRow(fb3) == fb3.height - shortCon.panelHeight(font, fb3.width, fb3.height),
           "控制台：panelHeight() 和实际画出来的高度一致（HUD 才能正确让位，短面板）");
 
     Console fullCon;
@@ -2358,9 +2364,44 @@ void testConsole() {
     fb4.resize(240, 200);
     fb4.clear(Vec3{1.0f, 1.0f, 1.0f});
     fullCon.draw(fb4, font);
-    check(topChangedRow(fb4) == fb4.height - fullCon.panelHeight(font, fb4.width),
+    check(topChangedRow(fb4) == fb4.height - fullCon.panelHeight(font, fb4.width, fb4.height),
           "控制台：panelHeight() 和实际画出来的高度一致（历史堆满、面板顶到上限）");
-    check(fullCon.panelHeight(font, fb4.width) <= font.lineHeight() * Console::kVisibleRows + Console::kPadY * 2,
+    // ⑩ 滚动：面板显示不下的行不是丢了，是视口钉在末尾 —— 关卡的提示是编号步骤，
+    //    "看不到第一步"等于没有提示。这里钉的是滚动本身（绘制效果靠出图看）。
+    {
+        Console sc;
+        sc.setVisible(true);
+        for (int i = 0; i < 30; ++i) sc.print("第 " + std::to_string(i) + " 行");
+        Framebuffer fs;
+        fs.resize(240, 200);
+        fs.clear(Vec3{1.0f, 1.0f, 1.0f});
+        sc.draw(fs, font);
+        check(sc.atBottom(), "控制台：默认贴着最新一行（跟真终端一样）");
+
+        sc.scrollBy(3);
+        check(!sc.atBottom() && sc.scroll() == 3, "控制台：往上滚 3 行");
+
+        // 滚过头：draw() 里要把它夹回合法范围，否则"再往下按"会看着没反应
+        sc.scrollBy(1000);
+        sc.draw(fs, font);
+        const int clamped = sc.scroll();
+        check(clamped > 0 && clamped < 1000, "控制台：滚过头被夹回合法范围（不会越滚越远）");
+
+        sc.scrollBy(1000);
+        sc.draw(fs, font);
+        check(sc.scroll() == clamped, "控制台：已经到顶之后再往上滚，位置不动");
+
+        sc.scrollToBottom();
+        check(sc.atBottom(), "控制台：能滚回最新一行");
+
+        // 换个小窗口重新开：滚动位置要复位（上次翻到一半关掉，下次打开还停在半路很莫名其妙）
+        sc.scrollBy(5);
+        sc.setVisible(false);
+        sc.setVisible(true);
+        check(sc.atBottom(), "控制台：重新打开时回到最新一行");
+    }
+
+    check(fullCon.panelHeight(font, fb4.width, fb4.height) <= font.lineHeight() * Console::kVisibleRows + Console::kPadY * 2,
           "控制台：面板高度有上限（历史再多也最多占 kVisibleRows 行字）");
 
     // ⑩ 字模整个没加载成功时也要能画（红块占位），绝不崩 —— 招新现场少一个文件不能白屏
@@ -3007,7 +3048,7 @@ int main(int argc, char** argv) {
             // 修复提示已经由 loadFromFile 打到 stderr 上了。
             Font font;
             font.loadFromFile("assets/font/pixel12.bin");
-            const int inset = con.panelHeight(font, renderW);
+            const int inset = con.panelHeight(font, renderW, renderH);
             GoalPanel goal;
             goal.title = lv.title;
             goal.goal = lv.goal;
