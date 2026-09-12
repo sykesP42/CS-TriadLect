@@ -48,7 +48,15 @@ Workshop buildWorkshop(World& w) {
     floor.albedo = Vec3{1.0f, 1.0f, 1.0f};
     floor.roughness = 0.30f;
     floor.albedoTexture = &checker;
-    floor.uvScale = Vec2{6.0f, 6.0f};
+    // 贴图的三个设置出厂是错的 —— 第 3 关「纹理」要从这里改起：
+    //   uvscale 1 1 = 整块地板只铺一张贴图（格子被拉伸成 1.5 米一块）；
+    //   clamp       = 铺出去的部分不重复，拉成边缘那一条颜色；
+    //   nearest     = 最近邻采样，格线硬，远处一格一格地闪。
+    // 和灯、材质两处一样：数据文件被写坏/删掉时退回代码默认，退回的也必须是
+    // "被调乱的样子"，不能白送过关。第 3 关的题面就是这个文件加 content/textures.txt。
+    floor.uvScale = Vec2{1.0f, 1.0f};
+    floor.wrapMode = kWrapClamp;
+    floor.filterMode = kFilterNearest;
     ws.matFloor = w.addMaterial("floor", floor);
 
     Material wall;
@@ -231,10 +239,14 @@ Workshop buildWorkshop(World& w) {
     // 这样即使数据文件被写坏、整份不生效，退回代码默认也还是黑屋子 ——
     // 不会出现"改错了反而把房间点亮、看起来像过关了"。
     //
-    // light 0 的位置 = 吊灯的挂点（灯罩实体在同一个坐标上）。
+    // light 0 的代码默认位置也留在门口（0, 1.1, 4.6），和 content/lights.txt 的出厂值
+    // 一样是"被搬乱了的样子"。为什么不默认放在灯罩底下（2.2, 2.9, 1.2）：那样一旦
+    // 数据文件被删掉/写坏，第 1 关的"光装回灯里了"这一项就白送 35% —— 屏幕写着
+    // 35%，可他什么都没做。出厂默认必须和题面一样是"没做完的样子"，第 2 关的球、
+    // 第 3 关的地板都是照这条来的，这一处也补上。
     // radius 是灯的物理尺寸：吊灯是块 0.84m 的发光板，所以给它 0.9 ——
     // 相当于一盏"软盒灯"，近距离不会数值爆炸（这就是 shader 里那行 dist2 + radius）
-    w.lights[0].position = Vec3{2.2f, 2.9f, 1.2f};
+    w.lights[0].position = Vec3{0.0f, 1.1f, 4.6f};
     w.lights[0].color = Vec3{1.0f, 0.93f, 0.82f};
     w.lights[0].intensity = 0.0f;
     w.lights[0].radius = 0.9f;

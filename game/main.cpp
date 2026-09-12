@@ -451,7 +451,8 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
         con.print("  light <强度>         主光，例如 light 60");
         con.print("  light <灯号> <强度>  指定某一盏，例如 light 0 60 / light 1 30");
         con.print("                       （灯号就是 content/lights.txt 里的编号）");
-        con.print("  inspect [材质|物体]  看材质参数，例如 inspect plastic / inspect 塑料球");
+        con.print("  inspect [材质|物体]  看材质参数，例如 inspect plastic / inspect 地板");
+        con.print("                       （带贴图的材质还会列出平铺次数 / 寻址 / 滤波）");
         con.print("                       （不给名字就列出全部材质）");
         con.print("  look <物体>          看物体的铭牌，例如 look lamp / look board");
         con.print("  reload               重新读 content/ 的数据文件（= 按 R）");
@@ -579,8 +580,12 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
                       double(m.metallic));
         con.print(buf);
         if (m.albedoTexture != nullptr) {
-            std::snprintf(buf, sizeof(buf), "  带贴图，uv 平铺 %.2g x %.2g", double(m.uvScale.x),
-                          double(m.uvScale.y));
+            // 贴图三件套打印成"词"（repeat / bilinear）：学生要改的就是这几个词，
+            // 那么"现在是什么态、要不要改"就得能在游戏里当场读出来，不该逼他翻文件。
+            std::snprintf(buf, sizeof(buf),
+                          "  带贴图（代码画的方格砖）：uv 平铺 %.2g x %.2g · 寻址 %s · 滤波 %s",
+                          double(m.uvScale.x), double(m.uvScale.y), detail::wrapWord(m.wrapMode),
+                          detail::filterWord(m.filterMode));
             con.print(buf);
         }
         if (m.emissive.x > 0.0f || m.emissive.y > 0.0f || m.emissive.z > 0.0f) {
@@ -588,7 +593,10 @@ void runCommand(const std::string& line, Console& con, World& world, ContentWatc
                           double(m.emissive.y), double(m.emissive.z));
             con.print(buf);
         }
-        con.print("  想看它变样：改 content/materials.txt 里 material " + matName + " 那一段，存盘后敲 reload");
+        // 指路要指对文件：地板是唯一带贴图的材质，它的那一段住在 textures.txt。
+        const char* home = m.albedoTexture != nullptr ? "content/textures.txt" : "content/materials.txt";
+        con.print(std::string("  想看它变样：改 ") + home + " 里 material " + matName +
+                  " 那一段，存盘后敲 reload");
         return;
     }
 
@@ -1646,6 +1654,35 @@ void testContent() {
     check(samePixels, "content：同一份数据应用两遍，画面逐像素一致（按 R 不会跳）");
     checkClose(again.luminance, judge.evaluate(w2b, levelAt(0)).luminance, 1e-9f,
                "关卡：评委机位同一场景连判两次，结果一模一样");
+
+    // ⑧ wrap / filter 是"值是词"的字段（第 3 关的三个词里占了两个）。它们比数字字段
+    //    多两条要求，两条都是给学生看的：词写错了要猜得到他想写哪个；写成编号
+    //    （wrap 1）要说明"这里写的是词"——那是很自然的猜测，不说明的话他只会以为
+    //    自己手滑。这两个词本身就是要教的东西，报错得教会人，不能只说"错的"。
+    const ContentPatch texPatch = parseContent("material floor { wrap repeat  filter bilinear }\n", "t");
+    check(texPatch.ok() && texPatch.materials.size() == 1 && texPatch.materials[0].hasWrap &&
+              texPatch.materials[0].hasFilter,
+          "content：wrap / filter 的值是词，能解析");
+    check(texPatch.materials[0].wrapMode == kWrapRepeat && texPatch.materials[0].filterMode == kFilterBilinear,
+          "content：repeat / bilinear 对应到世界里的那两个枚举值");
+    const ContentPatch texPatch2 = parseContent("material floor { wrap clamp  filter nearest }\n", "t");
+    check(texPatch2.ok() && texPatch2.materials[0].wrapMode == kWrapClamp &&
+              texPatch2.materials[0].filterMode == kFilterNearest,
+          "content：clamp / nearest 也认（四个词都认）");
+    const ContentPatch typoWrap = parseContent("material floor { wrap repeta }\n", "t");
+    check(!typoWrap.ok() && typoWrap.errors[0].find("repeat") != std::string::npos,
+          "content：wrap 拼错时提示「是不是想写 repeat」");
+    const ContentPatch numWrap = parseContent("material floor { wrap 1 }\n", "t");
+    check(!numWrap.ok() && numWrap.errors[0].find("词") != std::string::npos,
+          "content：wrap 写成编号（wrap 1）被挡回来，并说明这里要写词");
+    const ContentPatch valGone = parseContent("material floor { wrap }\n", "t");
+    // 值没写时不把 } 当值吃掉，否则后面还会再报一串假错误
+    check(valGone.errors.size() == 1, "content：wrap 后面没写词只报一处错（没把 } 当成值吃掉）");
+    // 样板材质上着锁：贴图设置也改不动（锁是全字段的，不是只管 albedo/roughness）
+    const ContentPatch lockTex = parseContent("material ref_chrome { wrap clamp  filter nearest }\n", "t");
+    st = applyContent(w, lockTex, &logLock);
+    check(st.locked == 1 && w.materials[size_t(refChrome)].wrapMode == kWrapRepeat,
+          "content：样板上了锁，贴图设置也一样改不动");
 }
 
 // 关卡自检。关卡表是「学生改完代码之后还会继续长大」的东西 —— 后面还要加三关，
@@ -1681,6 +1718,20 @@ void testLevel() {
     }
     check(judge.frame().width == kJudgeWidth && judge.frame().height == kJudgeHeight,
           "关卡：评委相机拍的是固定的 96x54 小图（不管玩家站在哪、看哪）");
+
+    // ①b 代码默认值不许白送过关。把 content/ 整个丢掉（= 数据文件被删掉 / 全写坏），
+    //     每一关都得读 0 —— 这条挡的是"删个文件反而过了"。前面三关各有一处默认值是
+    //     故意留黑的（灯、球、地板），但那是三处分散的实现细节；这里从外面把整件事
+    //     钉住：以后再加关卡，忘了把默认值调成"没做完的样子"，自检当场会红。
+    World wRaw;
+    buildWorkshop(wRaw);
+    int rawBad = -1;
+    for (int i = 0; i < levelCount(); ++i) {
+        if (judge.evaluate(wRaw, levelAt(i)).progress > 0.0f) rawBad = i;
+    }
+    std::string rawMsg = "关卡：content/ 一个文件都没有时，每一关都读 0%（丢文件不等于过关）";
+    if (rawBad >= 0) rawMsg += " —— 第 " + std::to_string(rawBad) + " 关不为 0";
+    check(rawBad < 0, rawMsg.c_str());
 
     // ② 判分跟着世界走：同一场景，把灯打开，评委机位必须更亮、进度只能升不能降。
     //    这条盯的是「判分方向没写反」——把变亮判成变暗是这一块最容易犯的错。
@@ -1791,6 +1842,55 @@ void testLevel() {
     applyContent(w7, parseContent("material ref_chrome { albedo 0.98 0.97 0.96  roughness 0.55  metallic 0.0 }\n"
                                   "material ref_clay   { albedo 0.30 0.32 0.36 }\n", "t"), &log6);
     checkClose(judge.evaluate(w7, lv2).progress, 0.0f, 1e-6f, "关卡 2：改样板（改考卷）不算过关，进度还是 0%");
+
+    // ⑦ 第 3 关是「一张贴图怎么贴」：平铺 4x4、repeat、bilinear 三件事各占一份。
+    //    每一档都钉住，尤其是两条歪路 —— "只改那两个词、平铺不动"（画面看着变干净了，
+    //    可地砖还是一块 1.5 米），和"把平铺拧到 100"（多铺几次总没错？题面是"铺几次"）。
+    const Level& lv3 = levelAt(3);
+    World w8;
+    loadFresh(w8);
+    checkClose(judge.evaluate(w8, lv3).progress, 0.0f, 1e-6f, "关卡 3：出厂状态读 0%（三件都没做）");
+
+    applyContent(w8, parseContent("material floor { uvscale 4 4 }\n", "t"), &log6);
+    const LevelStatus scaleOnly = judge.evaluate(w8, lv3);
+    checkClose(scaleOnly.progress, 0.4f, 1e-6f, "关卡 3：只把平铺改成 4x4 = 40%");
+    check(progressPercent(scaleOnly) == 40, "关卡 3：进度条老实写 40%");
+
+    applyContent(w8, parseContent("material floor { wrap repeat }\n", "t"), &log6);
+    checkClose(judge.evaluate(w8, lv3).progress, 0.7f, 1e-6f, "关卡 3：平铺 + 寻址 = 70%");
+
+    applyContent(w8, parseContent("material floor { filter bilinear }\n", "t"), &log6);
+    check(judge.evaluate(w8, lv3).passed(), "关卡 3：三件都改对才过关（100%）");
+
+    // 歪路一：只把 repeat / bilinear 改对，平铺还是 1 1 —— 地板砖还是老大一块
+    World w9;
+    loadFresh(w9);
+    applyContent(w9, parseContent("material floor { wrap repeat  filter bilinear }\n", "t"), &log6);
+    check(!judge.evaluate(w9, lv3).passed(), "关卡 3：光把寻址和滤波改对、平铺不动 —— 不过关");
+
+    // 歪路二：把平铺拧到 100（"多铺几次总没错"）。题面是"铺几次"，不是"越密越好"。
+    World w10;
+    loadFresh(w10);
+    applyContent(w10, parseContent("material floor { uvscale 100 100  wrap repeat  filter bilinear }\n", "t"), &log6);
+    check(!judge.evaluate(w10, lv3).passed(), "关卡 3：平铺拧到 100（地板糊成一片噪点）不算过关");
+
+    // 判定读数据、不读画面：房间全黑也照样判 —— 跳着关玩的人不会卡在"还没点灯"上。
+    applyContent(w10, parseContent("light 0 { intensity 0 }\nlight 1 { intensity 0 }\n", "t"), &log6);
+    applyContent(w10, parseContent("material floor { uvscale 4 4 }\n", "t"), &log6);
+    check(judge.evaluate(w10, lv3).passed(), "关卡 3：房间全黑，改对的就是改对了（判定读的是数据不是画面）");
+
+    // ⑧ 第 3 关动的是地板，而地板是第 1 关评委画面里最大的一块受光面 —— 两关很容易
+    //    互相拖累（第 3 关的题改对了，第 1 关的亮度却掉下达标线）。这里钉两条：
+    //    地板还是被调乱的样子时、和地砖铺好之后，第 1 关都得照过不误。
+    //    这两条就是"第 1 关达标线怎么定的"那件事的长期看门人：以后谁再动地板、
+    //    动灯、动材质，只要把第 1 关的余量吃掉了，自检当场会红。
+    World w11;
+    loadFresh(w11);
+    applyContent(w11, parseContent("light 0 { pos 2.20 2.90 1.20  intensity 48 }\n"
+                                   "material lamp { emissive 4.2 3.8 3.0 }\n", "t"), &log6);
+    check(judge.evaluate(w11, lv1).passed(), "关卡 1：地板还是被调乱的样子，灯那三件做对了照样过关");
+    applyContent(w11, parseContent("material floor { uvscale 4 4  wrap repeat  filter bilinear }\n", "t"), &log6);
+    check(judge.evaluate(w11, lv1).passed(), "关卡 1：第 3 关把地板修好之后，第 1 关还是过关（两关不互相拖累）");
 }
 
 // 控制台自检。控制台是「学生唯一能对着画面打字的地方」，它的每一条交互都是承诺：

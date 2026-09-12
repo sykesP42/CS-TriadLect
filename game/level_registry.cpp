@@ -15,6 +15,7 @@ const Level* const kLevels[] = {
     &levelDark(),        // 第 0 关
     &levelFirstLight(),  // 第 1 关
     &levelMaterial(),    // 第 2 关
+    &levelTexture(),     // 第 3 关
 };
 
 constexpr int kLevelCount = int(sizeof(kLevels) / sizeof(kLevels[0]));

@@ -108,5 +108,6 @@ int findLevel(const std::string& id);  // 找不到返回 -1
 const Level& levelDark();        // 第 0 关「黑暗」
 const Level& levelFirstLight();  // 第 1 关「第一束光」
 const Level& levelMaterial();    // 第 2 关「材质」
+const Level& levelTexture();     // 第 3 关「纹理」
 
 }  // namespace dlab

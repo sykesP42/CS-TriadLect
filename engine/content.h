@@ -10,13 +10,17 @@
 // 语法（P0）：
 //     # 井号到行尾是注释
 //     material chrome { albedo 0.95 0.93 0.90  roughness 0.06  metallic 1.0 }   ← materials.txt
+//     material floor  { uvscale 4 4  wrap repeat  filter bilinear }              ← textures.txt
 //     light 0         { pos 2.2 2.9 1.2  color 1.0 0.93 0.82  intensity 48  radius 0.9 }
 //     ambient 0.42 0.44 0.50                                                    ← lighting.txt
 //     sky     0.46 0.56 0.78
 //     ground  0.24 0.20 0.17
 // 花括号可以换行写，逗号当空格用（0.5, 0.2, 0.2 也认），大小写敏感。
+// wrap / filter 的值是词不是数字：wrap repeat|clamp、filter nearest|bilinear。
+// 这两个词本身就是要教的东西（第 3 关），让学生敲 0/1 是在考他记编号。
 // 一个文件里能写哪几类块不限 —— 现在 materials.txt 放 material，lights.txt 放 light，
-// lighting.txt 放环境色。分文件只是为了"一次只开一个、别改错地方"，语法是同一套。
+// lighting.txt 放环境色，textures.txt 放地板的贴图设置。分文件只是为了
+// "一次只开一个、别改错地方"，语法是同一套。
 #pragma once
 
 #include <algorithm>
@@ -41,6 +45,8 @@ struct MaterialPatch {
     bool hasMetallic = false;   float metallic = 0.0f;
     bool hasEmissive = false;   Vec3 emissive{};
     bool hasUvScale = false;    Vec2 uvScale{};
+    bool hasWrap = false;       int wrapMode = 0;    // kWrapRepeat / kWrapClamp
+    bool hasFilter = false;     int filterMode = 0;  // kFilterNearest / kFilterBilinear
     int line = 0;  // 块头行号，报「世界没这个材质」时指回文件用
 };
 
@@ -66,7 +72,7 @@ struct ContentPatch {
 
 // 被监视的 content 文件清单。M4 做关卡时按关卡换一批（所以这里返回的是 vector）。
 inline std::vector<std::string> contentFileList() {
-    return {"content/materials.txt", "content/lights.txt", "content/lighting.txt"};
+    return {"content/materials.txt", "content/lights.txt", "content/lighting.txt", "content/textures.txt"};
 }
 
 // ------------------------------------------------------------------ 接口
@@ -189,10 +195,12 @@ struct FieldSpec {
 };
 
 inline const FieldSpec* kMaterialFields() {
-    static const FieldSpec f[] = {{"albedo", 3}, {"roughness", 1}, {"metallic", 1}, {"emissive", 3}, {"uvscale", 2}};
+    static const FieldSpec f[] = {{"albedo", 3},  {"roughness", 1}, {"metallic", 1},
+                                  {"emissive", 3}, {"uvscale", 2},  {"wrap", 1},
+                                  {"filter", 1}};
     return f;
 }
-inline const int kMaterialFieldCount = 5;
+inline const int kMaterialFieldCount = 7;
 
 inline const FieldSpec* kLightFields() {
     static const FieldSpec f[] = {{"pos", 3}, {"color", 3}, {"intensity", 1}, {"radius", 1}};
@@ -216,6 +224,47 @@ inline int fieldArity(const FieldSpec* specs, int n, const std::string& name) {
     for (int i = 0; i < n; ++i)
         if (name == specs[i].name) return specs[i].arity;
     return -1;
+}
+
+// "值是词"的字段（wrap / filter）的取值表：词 + 它对应的枚举值 + 一句"这个词是干什么的"。
+// 那句解释会被原样写进报错 —— 学生分不清 repeat 和 clamp 谁是谁的时候，
+// 不用去翻文档，报错里就写着两个人各自是干什么的。
+struct WordOption {
+    const char* word;
+    int value;
+    const char* note;
+};
+
+inline const WordOption* wrapOptions(int& n) {
+    static const WordOption o[] = {
+        {"repeat", kWrapRepeat, "超出去的部分从头再来（= 平铺）"},
+        {"clamp", kWrapClamp, "超出去的部分按边缘那一条颜色拉出去（铺超过一张时整块地板变成一个纯色）"},
+    };
+    n = 2;
+    return o;
+}
+
+inline const WordOption* filterOptions(int& n) {
+    static const WordOption o[] = {
+        {"nearest", kFilterNearest, "最近邻：取最近的那一个像素，边缘硬、放大会看见方块"},
+        {"bilinear", kFilterBilinear, "双线性：周围四个像素插值，边缘平滑"},
+    };
+    n = 2;
+    return o;
+}
+
+// 把世界里的现状写成人话（inspect 要打"现在是 clamp 还是 repeat"）。
+// 认不出来的值（世界被谁改坏了）原样报数字，不装作认识。
+inline const char* wrapWord(int mode) {
+    if (mode == kWrapRepeat) return "repeat";
+    if (mode == kWrapClamp) return "clamp";
+    return "（不认识）";
+}
+
+inline const char* filterWord(int mode) {
+    if (mode == kFilterNearest) return "nearest";
+    if (mode == kFilterBilinear) return "bilinear";
+    return "（不认识）";
 }
 
 inline Vec3 toVec3(const std::vector<float>& v) { return Vec3{v[0], v[1], v[2]}; }
@@ -377,6 +426,14 @@ private:
             const int arity = fieldArity(specs, specCount, key.text);
             ++pos_;
 
+            // wrap / filter 走单独一条路：它们的值是词（repeat/clamp、nearest/bilinear），
+            // 不是数字。列进 kMaterialFields 只是为了两件事：拼错时能被 suggest 想到、
+            // 数字扫描时被当成"新字段的开头"停下来。
+            if (isMaterial && (key.text == "wrap" || key.text == "filter")) {
+                parseTextureWord(mp, key, specs, specCount);
+                continue;
+            }
+
             if (arity < 0) {
                 const std::string s = suggest(key.text, names);
                 err(key.line, "未知字段 \"" + key.text + "\"" +
@@ -419,6 +476,62 @@ private:
             }
         }
         err(headLine, what + " " + nameTok.text + " 没有用 } 闭合（文件在这里就结束了）");
+    }
+
+    // wrap repeat / filter bilinear 这类"值是词"的字段。
+    // 三条要求，一条都不能少：词要在取值表里；词写错要给"是不是想写 X"；
+    // 值没写（下一个 token 已经是新字段或 }）要报"缺一个词"而不是把那个 token 吃掉
+    // —— 吃掉的话，后面会连带报一串假错误，学生反而不知道错在哪。
+    void parseTextureWord(MaterialPatch& mp, const Token& key, const FieldSpec* specs, int specCount) {
+        const bool isWrap = key.text == "wrap";
+        int optCount = 0;
+        const WordOption* opts = isWrap ? wrapOptions(optCount) : filterOptions(optCount);
+        const std::string what = isWrap ? "wrap" : "filter";
+        auto allowed = [&]() {
+            std::string s;
+            for (int i = 0; i < optCount; ++i) {
+                s += (i ? " 或 " : "");
+                s += std::string(opts[i].word) + "（" + opts[i].note + "）";
+            }
+            return s;
+        };
+
+        if (pos_ >= toks_.size()) {
+            err(key.line, what + " 后面缺一个词，要写 " + allowed());
+            return;
+        }
+        const Token val = toks_[pos_];
+        const bool structural = val.text == "{" || val.text == "}" || val.text == "material" ||
+                                val.text == "light" || fieldArity(specs, specCount, val.text) >= 0;
+        if (structural) {
+            err(val.line, what + " 后面缺一个词，要写 " + allowed());
+            return;
+        }
+        ++pos_;  // 到这里它一定是个"打算当值写"的 token，认不认得都收下
+
+        float asNumber = 0.0f;
+        if (parseNumber(val.text, asNumber)) {
+            // 写成编号（wrap 1）是很自然的猜测 —— 单独给一句，别让他以为是自己手滑
+            err(val.line, what + " 写的是词不是编号，要写 " + allowed() + "；这里是 \"" + val.text + "\"");
+            return;
+        }
+        for (int i = 0; i < optCount; ++i) {
+            if (val.text == opts[i].word) {
+                if (isWrap) {
+                    mp.wrapMode = opts[i].value;
+                    mp.hasWrap = true;
+                } else {
+                    mp.filterMode = opts[i].value;
+                    mp.hasFilter = true;
+                }
+                return;
+            }
+        }
+        std::vector<std::string> words;
+        for (int i = 0; i < optCount; ++i) words.push_back(opts[i].word);
+        const std::string s = suggest(val.text, words);
+        err(val.line, what + " 只认 " + allowed() + "；\"" + val.text + "\" 不认识" +
+                          (s.empty() ? "" : "（是不是想写 " + s + "？）"));
     }
 
     // ambient 0.42 0.44 0.50 这类顶层单行数据
@@ -541,6 +654,8 @@ inline ApplyStats applyContent(World& world, const ContentPatch& patch, std::vec
         if (mp.hasMetallic) m.metallic = mp.metallic;
         if (mp.hasEmissive) m.emissive = mp.emissive;
         if (mp.hasUvScale) m.uvScale = mp.uvScale;
+        if (mp.hasWrap) m.wrapMode = mp.wrapMode;
+        if (mp.hasFilter) m.filterMode = mp.filterMode;
         ++st.materials;
     }
 
