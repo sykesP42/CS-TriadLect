@@ -56,6 +56,13 @@ struct FrameInput {
     }
 };
 
+// 窗口模式。三种都**不改变渲染分辨率** —— 那是调用方的事（见 game/main.cpp 的菜单接线）。
+enum class WindowMode {
+    Windowed,    // 普通带边框窗口
+    Borderless,  // 无边框窗口（按所选分辨率定尺寸、居中）
+    Fullscreen,  // 无边框全屏（铺满显示器，含任务栏区域）
+};
+
 class Window {
 public:
     Window();

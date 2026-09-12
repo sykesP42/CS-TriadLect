@@ -21,6 +21,7 @@
 #include "../engine/mesh.h"
 #include "../engine/reload.h"
 #include "../engine/save.h"
+#include "../engine/settings.h"
 #include "../engine/world.h"
 #include "level.h"
 #include "player.h"
@@ -2313,6 +2314,72 @@ void testSave() {
     check(!loadSave(path).loaded, "存档：删档之后读出来是「没有存档」");
 }
 
+// 画面设置的自检。重点全落在"坏输入不许把游戏弄打不开"上 ——
+// 一个设置文件坏了就不让人进游戏，是比没有设置更糟的事。
+void testSettings() {
+    const std::string path = "build/selftest_settings.txt";
+
+    // ① 往返：写出去再读回来，三个字段一个不差
+    Settings a;
+    a.mode = WindowMode::Fullscreen;
+    a.width = 1280;
+    a.height = 720;
+    check(saveSettings(a, path), "设置：能写出 saved/settings.txt 那个格式");
+    Settings b;
+    check(loadSettings(path, b), "设置：写出去的能读回来");
+    check(b.mode == WindowMode::Fullscreen && b.width == 1280 && b.height == 720,
+          "设置：往返之后 mode/width/height 一模一样");
+
+    // ② 文件不存在 → 回完整默认值，返回 false（不是崩，也不是半个默认）
+    Settings c;
+    check(!loadSettings("build/这个文件不存在.txt", c), "设置：文件不在时返回 false");
+    check(c.mode == WindowMode::Windowed && c.width == 0 && c.height == 0,
+          "设置：文件不在时给的是完整默认值");
+
+    // ③ 乱码文件 → 回默认值，不打不开游戏
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (f != nullptr) {
+            std::fwrite("\x01\x02 not a settings file at all\n", 1, 31, f);
+            std::fclose(f);
+        }
+        Settings d;
+        check(!loadSettings(path, d), "设置：乱码文件返回 false");
+        check(d.mode == WindowMode::Windowed, "设置：乱码文件回默认模式（不崩）");
+    }
+
+    // ④ 认不出的键 → 算读失败，但已认出来的字段照样生效
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (f != nullptr) {
+            std::fprintf(f, "mode fullscreen\nbogus 3\n");
+            std::fclose(f);
+        }
+        Settings e;
+        check(!loadSettings(path, e), "设置：认不出的键算读失败");
+        check(e.mode == WindowMode::Fullscreen, "设置：认不出的键不影响已认出来的字段");
+    }
+
+    // ⑤ 分辨率表：三档、约等于 16:9、封顶 720p
+    //    注意是"约等于"：854x480 是约定俗成的 480p 宽度，可它的宽高比是 1.7792，
+    //    和精确的 16:9（1.7778）差 0.08% —— 拉到 2560 宽的屏上也就差 2 像素，
+    //    肉眼看不出来。要求精确相等就会把一个标准分辨率挡在门外，所以给 1% 容差。
+    check(kResolutionCount == 3, "设置：分辨率表是三档");
+    for (int i = 0; i < kResolutionCount; ++i) {
+        const Resolution& r = kResolutions[i];
+        check(r.h <= 720, "设置：没有一档超过 720p（软渲染撑不住）");
+        const double aspect = double(r.w) / double(r.h);
+        check(aspect > 1.760 && aspect < 1.796, "设置：每一档都约等于 16:9（不然全屏拉伸会变形）");
+    }
+
+    // ⑥ 收档：任意尺寸都能收进表里，而且就近
+    check(nearestResolutionIndex(1600, 900) == 2, "设置：1600x900 收进 1280x720（启动默认封顶）");
+    check(nearestResolutionIndex(1000, 600) == 1, "设置：1000x600 收进 960x540");
+    check(nearestResolutionIndex(400, 300) == 0, "设置：太小的话收到最小那档");
+
+    std::remove(path.c_str());
+}
+
 int runSelfTest() {
     // 命令行默认值也得钉：离屏出图的默认分辨率不许低于 480p（明确要求，见 Args 里
     // width/height 那段注释）。这条挡的是"谁为了快又把它悄悄调回 480x270"。
@@ -2335,6 +2402,7 @@ int runSelfTest() {
     testLevel();
     testConsole();
     testSave();
+    testSettings();
     if (g_failures == 0) {
         std::printf("[selftest] %d 项检查全部通过\n", g_checks);
         return 0;
