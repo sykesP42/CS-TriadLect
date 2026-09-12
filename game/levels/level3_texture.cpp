@@ -74,14 +74,21 @@ Camera judgeCamera() {
 
 const char* kHint =
     "低头看看地板：方格砖被拉成了 1.5 米一块的大方块 —— 因为整块地板只铺了一张贴图。\n"
-    "content/textures.txt 里 floor 那三行被人调乱了，三个词各管一件事：\n"
-    "  uvscale 一张贴图铺几次（现在 1 1，要 4 4）；\n"
-    "  wrap repeat 还是 clamp —— 铺出去的部分从头再来，还是拉成边缘那一条颜色。\n"
-    "       注意：铺超过一张时，clamp 会把地板变成一整块纯色，那不是坏了，是它在干活；\n"
-    "  filter nearest 还是 bilinear —— 一个像素问贴图要颜色，是只取最近的一个（硬、会闪），\n"
-    "       还是周围四个插值一下（平滑）。\n"
-    "想现场核对：敲 inspect 地板，三个设置现在是什么态都写在上面。改完存盘、按 R，当场见效。\n"
-    "小窍门：filter 在 nearest / bilinear 之间来回换，盯着远处的地板看 —— 一个会闪，一个不闪。";
+    "\n"
+    " 1. 用记事本打开 content/textures.txt，里面 floor 那三行要改：\n"
+    "        uvscale  1 1       改成  4 4        （一张贴图铺几次）\n"
+    "        wrap     clamp     改成  repeat     （铺出去的部分从头再来）\n"
+    "        filter   nearest   改成  bilinear   （采样时周围四个像素插值一下）\n"
+    " 2. 存盘（Ctrl+S），切回游戏，按 R\n"
+    "\n"
+    "三个词各占三分之一的进度，全改对才过关。这次也不用重新编译。\n"
+    "\n"
+    "有两个地方会让你以为弄坏了，其实没有：\n"
+    "  · 只把 uvscale 改成 4 4 的话，整块地板会变成一片纯色 —— 那不是坏了，\n"
+    "    是 clamp 在干活（超出范围的坐标被拉成了边缘那一条颜色）。改完 wrap 就变回格子。\n"
+    "  · nearest 和 bilinear 的差别要盯着地板的远处看：一个会一格一格地闪，一个不闪。\n"
+    "\n"
+    "想现场核对：敲 inspect 地板，三个设置现在是什么态都写在上面。";
 
 const Level& make() {
     static const Level lv = [] {

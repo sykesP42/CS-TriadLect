@@ -327,6 +327,46 @@ void blendRect(Framebuffer& fb, int x, int y, int w, int h, Vec3 color, float al
         for (int gx = 0; gx < w; ++gx) fb.blendPixel(x + gx, y + gy, color, alpha);
 }
 
+// 开局那张引导卡。**写给零基础的人**。
+//
+// 为什么光靠 HUD 上的目标面板不够：目标写的是**终态**（"让房间重新亮起来"），
+// 不是"你现在该按哪个键"。一个没玩过第一人称游戏的人，进来看见一片全黑，
+// 第一反应是"是不是坏了"，而不是"我该往前走"。这张卡补的就是那一步。
+//
+// 几秒后自己淡掉（alpha 从 1 到 0），不挡路 —— 看懂了的人不会被它烦到。
+void drawGuideCard(Framebuffer& fb, const Font& font, float alpha) {
+    if (alpha <= 0.01f) return;
+    const Vec3 white{2.2f, 2.2f, 2.25f};
+    const Vec3 dim{1.6f, 1.6f, 1.65f};
+    const Vec3 key{2.10f, 1.95f, 1.25f};  // 和 HUD 那句"下一步"一个颜色：都是"该你动了"
+    const Vec3 panel{0.02f, 0.025f, 0.04f};
+
+    const char* l1 = "这是全黑的 —— 第 0 关就是让你自己把灯打开。";
+    const char* l2 = "WASD 走 · 鼠标转头 · 走到东西跟前按 E";
+    // 说"正前方"是错的：这条提示出现的时候玩家可能已经转过头了（看一眼就转走了）。
+    // 所以只说"黑暗里唯一亮着的那块屏幕"—— 不管朝哪边都指得到。
+    const char* l3 = "黑暗里只有一块发亮的屏幕，那就是终端 —— 走过去看着它按 E。";
+
+    const int pad = 10;
+    int textW = font.measureLine(l1);
+    textW = std::max(textW, font.measureLine(l2));
+    textW = std::max(textW, font.measureLine(l3));
+    const int lineH = font.lineHeight();
+    const int boxW = textW + pad * 2;
+    const int boxH = lineH * 3 + pad * 2;
+    const int x = (fb.width - boxW) / 2;
+    // 放在偏上一点：中间是准星，底下是操作提示行，都不挤
+    const int y = std::max(16, fb.height / 4);
+
+    blendRect(fb, x, y, boxW, boxH, panel, 0.82f * alpha);
+    int ty = y + pad;
+    font.drawLine(fb, x + pad, ty, l1, white, alpha);
+    ty += lineH;
+    font.drawLine(fb, x + pad, ty, l2, key, alpha);
+    ty += lineH;
+    font.drawLine(fb, x + pad, ty, l3, dim, alpha);
+}
+
 // 左上角那块「你现在该干什么」。进度来自评委机位那张小图 —— 和玩家站在哪、
 // 朝哪看都无关（见 game/level.h 的开头）。
 // 没有关卡（title 为空）时整块不画，画面和上一版逐像素一致。
@@ -335,7 +375,18 @@ struct GoalPanel {
     std::string goal;
     float progress = 0.0f;
     bool passed = false;
+    std::string nextStep;  // 空 = 不显示这一行（见 nextStepText）
 };
+
+// 「下一步该干嘛」。**只看进度，不看是哪一关** —— 这样它永远是真的，
+// 也不用给每关每阶段维护一份文案。
+// 为什么需要它：零基础的人看着"目标：让房间重新亮起来"是不知道该动什么的 ——
+// 目标说的是"终态"，不是"下一个动作"。这一行补的就是那个动作。
+std::string nextStepText(float progress) {
+    if (progress >= 1.0f) return std::string();  // 过了就没什么下一步了
+    if (progress <= 0.0f) return "走到桌子前的终端，看着它按 E";
+    return "照着终端说的改，进度条会当场动";
+}
 
 void drawGoalPanel(Framebuffer& fb, const Font& font, int x, int y, const GoalPanel& goal) {
     if (goal.title.empty()) return;
@@ -352,9 +403,17 @@ void drawGoalPanel(Framebuffer& fb, const Font& font, int x, int y, const GoalPa
     // passed 是从 progress 推出来的，这里只喂 progress 就够（见 level.h 的 progressPercent）
     std::snprintf(pct, sizeof(pct), "%d%%", progressPercent(LevelStatus{goal.progress, 0.0f}));
     const std::string goalLine = std::string("目标：") + goal.goal;
-    const int textW = std::max(font.measureLine(goalLine), font.measureLine(goal.title));
+    // "下一步"用亮一点的颜色：它是这一屏里唯一一条"你现在该做什么"，
+    // 零基础的人第一眼要抓到的是它，不是目标。
+    const Vec3 stepColor{1.9f, 1.75f, 1.15f};
+    const std::string stepLine =
+        goal.nextStep.empty() ? std::string() : std::string("下一步：") + goal.nextStep;
+    const bool hasStep = !stepLine.empty();
+
+    int textW = std::max(font.measureLine(goalLine), font.measureLine(goal.title));
+    if (hasStep) textW = std::max(textW, font.measureLine(stepLine));
     const int rowW = std::max(textW, barW + 12 + font.measureLine(pct)) + pad * 2;
-    const int rowH = font.lineHeight() * 3;
+    const int rowH = font.lineHeight() * (hasStep ? 4 : 3);
     blendRect(fb, x, y, rowW, rowH, panel, 0.68f);
 
     int ty = y + pad / 2;
@@ -362,6 +421,10 @@ void drawGoalPanel(Framebuffer& fb, const Font& font, int x, int y, const GoalPa
     ty += font.lineHeight();
     font.drawLine(fb, x + pad, ty, goalLine, dim, 1.0f, 1);
     ty += font.lineHeight();
+    if (hasStep) {
+        font.drawLine(fb, x + pad, ty, stepLine, stepColor, 1.0f, 1);
+        ty += font.lineHeight();
+    }
 
     // 进度条：外面一圈描边 + 里面按比例填。用矩形而不是字符块画 ——
     // 字模里没有「█」这种方块字，硬画会变成豆腐块。
@@ -483,14 +546,26 @@ void printLevelBriefing(Console& con, const LevelRuntime& rt) {
     con.printOk(lv.title);
     std::snprintf(buf, sizeof(buf), "目标：%s", lv.goal);
     con.print(buf);
-    con.print(lv.hint);
+    // hint 允许写成多行（用 '\n' 分行）。控制台是"一次 print = 一行"、不会自己拆，
+    // 所以这里手工拆开。为什么值得拆：零基础的人要靠这段文字动手，
+    // 编号步骤的排版比一大段长句子有用得多（长句子会被按宽度硬折，折在哪全看运气）。
+    {
+        const std::string& h = lv.hint;
+        size_t start = 0;
+        for (size_t i = 0; i <= h.size(); ++i) {
+            if (i == h.size() || h[i] == '\n') {
+                con.print(h.substr(start, i - start));
+                start = i + 1;
+            }
+        }
+    }
+    // 学生只需要看到百分比。后面那串"评委机位亮度 xxx，其中灯贡献 xxx"是**我们定达标线
+    // 用的内部数字** —— 摆在这里既没用又吓人（"评委会是什么？"），拿掉。
+    // 要看详细数字：用 --trace，或者看离屏那行 [关卡] 输出（那是给开发看的）。
     if (rt.status.passed()) {
-        std::snprintf(buf, sizeof(buf), "已经过关了（评委机位亮度 %.4f，其中灯贡献 %.4f）",
-                      double(rt.status.luminance), double(rt.status.lightLuminance));
+        std::snprintf(buf, sizeof(buf), "已经过关了");
     } else {
-        std::snprintf(buf, sizeof(buf), "现在 %d%%（评委机位亮度 %.4f，其中灯贡献 %.4f）",
-                      progressPercent(rt.status), double(rt.status.luminance),
-                      double(rt.status.lightLuminance));
+        std::snprintf(buf, sizeof(buf), "现在 %d%%", progressPercent(rt.status));
     }
     con.print(buf);
 }
@@ -865,6 +940,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
     if (autopilot) std::printf("[dreamlab-rt] --walk 接管输入（%s），键盘这局不生效\n", args.walk.c_str());
 
     double last = win.time();
+    const double runStart = win.time();  // 开局引导卡按这个倒计时（见 drawGuideCard）
     float fps = 60.0f;
     int frame = 0;
     // 开场就过关的两种情形要分开（见 main 里那段注释）：早就过了的别再喊，
@@ -1077,6 +1153,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         goal.goal = shown.goal;
         goal.progress = rt.status.progress;
         goal.passed = rt.status.passed();
+        goal.nextStep = nextStepText(rt.status.progress);
         drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint, goal);
         // 菜单开着时不画准星：它和它的提示文字会从菜单的半透明遮罩下透出来，糊在面板中间。
         // （HUD 留着 —— 它在面板外面，被压暗之后正好当背景信息。）
@@ -1089,6 +1166,16 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
                           toast.alive(now) ? toast.text : std::string());
         }
         if (con.visible()) con.draw(rz.framebuffer(), font);
+        // 开局那张引导卡：只在第 0 关、还没开始动手的时候出现（= 真正的新生场景，
+        // 也是唯一会"一进来全黑、不知道能不能动"的地方）。十秒后淡掉。
+        if (rt.index == 0 && rt.status.progress <= 0.0f && !menu.visible() && !con.visible()) {
+            const double since = now - runStart;
+            if (since < 12.0) {
+                // 前 9 秒实心，之后 3 秒淡出 —— 直接消失太突然
+                const float a = since < 9.0 ? 1.0f : float((12.0 - since) / 3.0);
+                drawGuideCard(rz.framebuffer(), font, a);
+            }
+        }
         if (menu.visible()) menu.draw(rz.framebuffer(), font);  // 最后画：盖住 HUD 和控制台
 
         rz.framebuffer().toRGB8Into(rgbFrame, args.exposure, true, args.threads);
@@ -2926,6 +3013,7 @@ int main(int argc, char** argv) {
             goal.goal = lv.goal;
             goal.progress = rt.status.progress;
             goal.passed = rt.status.passed();
+            goal.nextStep = nextStepText(rt.status.progress);
             if (args.hud)
                 drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset,
                         kWindowHint, goal);

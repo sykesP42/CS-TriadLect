@@ -42,11 +42,24 @@ float progressDark(const LevelView& view) {
     return (view.luminance - kDarkLuminance) / bar;
 }
 
+// 提示是写给**零基础的人**看的 —— 他们不知道 .cpp 是什么、不知道用什么打开它，
+// 也不知道"存盘"和"重新编译"具体是哪个动作。所以宁可啰嗦，也要写成能照着做的步骤。
+// 注意别写死行号（"第 40 行"会漂），教他们搜关键词反而更耐用。
 const char* kHint =
-    "这间屋子本来有光，现在全黑 —— 整个房间的底光被一个系数乘没了。"
-    "它在 game/shaders/lighting.cpp 里，叫 kAmbientStrength，出厂是 0.0f。"
-    "把它改成 0.6f，存盘，重新运行 build.bat。回来时你还站在这里："
-    "位置存在 saved/save.bin，不会丢。";
+    "这间屋子本来是亮的，现在全黑 —— 有人把灯的总开关拧到了零。\n"
+    "这一步不需要会写代码，照着做就行：\n"
+    "\n"
+    " 1. 打开 game/shaders/ 这个文件夹，用记事本打开里面的 lighting.cpp\n"
+    "    （右键它 -> 打开方式 -> 记事本。装过 VS Code 的话用那个更好）\n"
+    " 2. 按 Ctrl+F，搜 kAmbientStrength\n"
+    " 3. 你会看到这么一行：\n"
+    "        constexpr float kAmbientStrength = 0.0f;\n"
+    "    把里面的 0.0f 改成 0.6f\n"
+    " 4. 按 Ctrl+S 存盘\n"
+    " 5. 回到仓库那个文件夹，双击 build.bat，等十几秒\n"
+    " 6. 再运行 build\\dreamlab.exe —— 房间就亮了，而你还站在这里\n"
+    "\n"
+    "（第 6 步那句话不是安慰：改代码不用怕丢进度，游戏会把你放回原位。）";
 
 }  // namespace
 
