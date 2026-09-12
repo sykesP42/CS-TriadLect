@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "../core/png_write.h"
 #include "../core/raster.h"
 #include "../core/texture.h"
+#include "../engine/console.h"
 #include "../engine/content.h"
 #include "../engine/mesh.h"
 #include "../engine/reload.h"
@@ -23,6 +25,9 @@
 using namespace dlab;
 
 namespace {
+
+// 空场景的底色：不是纯黑，留一点冷色，让人一眼看出「这是没照到光的暗处」而不是「渲染坏了」
+const Vec3 kClearColor{0.012f, 0.014f, 0.02f};
 
 // ---------------------------------------------------------------- 命令行
 
@@ -43,6 +48,8 @@ struct Args {
     std::string previewText;
     bool hud = false;                    // 叠一层文字 HUD（验证中文字模进 PNG 的整条链）
     int watchMs = 0;                     // >0 = 截图前先等 content 变化（离屏验证热重载）
+    bool console = false;                // 显示控制台面板
+    std::vector<std::string> cmds;       // --cmd：进游戏前注入的命令（可重复）
     bool help = false;
 };
 
@@ -64,6 +71,8 @@ void printUsage() {
         "  --hud              在画面上叠一层文字（验证中文渲染进 PNG）\n"
         "  --watch <毫秒>     先应用 content/，再等文件变化并重新应用，然后才截图\n"
         "                     （没有窗口也能验证「改数据 → 按 R → 世界变化」）\n"
+        "  --console          显示游戏内控制台面板\n"
+        "  --cmd \"命令\"       进游戏前注入一条控制台命令（可重复，隐含 --console）\n"
         "  --selftest         运行内置自检\n"
         "  -h, --help         显示本帮助\n");
 }
@@ -111,6 +120,11 @@ Args parseArgs(int argc, char** argv) {
             a.hud = true;
         } else if (s == "--watch") {
             a.watchMs = std::atoi(takeValue(argc, argv, i, "--watch"));
+        } else if (s == "--console") {
+            a.console = true;
+        } else if (s == "--cmd") {
+            a.cmds.push_back(takeValue(argc, argv, i, "--cmd"));
+            a.console = true;
         } else if (s == "--selftest") {
             a.selftest = true;
         } else if (s == "-h" || s == "--help") {
@@ -158,7 +172,9 @@ void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds) {
 // ---------------------------------------------------------------- HUD
 // 文字直接叠进颜色缓冲，不参与深度测试。颜色是线性 HDR 且最后统一过 ACES，
 // 所以"纯白文字"要给 2.2 左右 —— 给 1.0 出来是灰的（渲染顺序决定的，不是 bug）。
-void drawHud(Framebuffer& fb, const Font& font, float fps) {
+// bottomInset：控制台面板占掉的高度。贴底的状态栏得往上让开，不然会被半透明
+// 面板盖成一层灰影 —— 两样东西叠在一起，比哪一样单独显示都难读。
+void drawHud(Framebuffer& fb, const Font& font, float fps, int bottomInset = 0) {
     const Vec3 white{2.2f, 2.2f, 2.25f};
     const Vec3 dim{1.5f, 1.5f, 1.55f};
     const Vec3 panel{0.02f, 0.025f, 0.04f};
@@ -179,9 +195,177 @@ void drawHud(Framebuffer& fb, const Font& font, float fps) {
     char stats[96];
     std::snprintf(stats, sizeof(stats), "DreamLab 2026 · %.0f FPS · %dx%d", double(fps), fb.width, fb.height);
     const int statsW = font.measureLine(stats);
-    const int statsY = fb.height - font.glyphH() - pad - 8;
+    const int statsY = fb.height - bottomInset - font.glyphH() - pad - 8;
     panelRect(8, statsY - pad, statsW + pad * 2, font.glyphH() + pad * 2);
     font.drawLine(fb, 8 + pad, statsY, stats, dim, 1.0f, 1);
+}
+
+// ---------------------------------------------------------------- 控制台命令
+// 命令放这里而不是 console.h：知道"世界"的东西不该塞进"终端"里。
+// 每条命令只做一件小事、回一行中文 —— 命令和结果之间没有黑箱，这是给学生看的。
+// 命令本身全是 ASCII，不用切输入法。
+
+std::vector<std::string> splitTokens(const std::string& line) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : line) {
+        if (c == ' ' || c == '\t') {
+            if (!cur.empty()) {
+                out.push_back(cur);
+                cur.clear();
+            }
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+std::string joinFloats(const std::vector<float>& v) {
+    char buf[64];
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i) {
+        std::snprintf(buf, sizeof(buf), "%s%.4g", i ? " " : "", double(v[i]));
+        out += buf;
+    }
+    return out;
+}
+
+std::string joinNames(const std::vector<std::string>& v) {
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i) out += (i ? " " : "") + v[i];
+    return out;
+}
+
+void runCommand(const std::string& line, Console& con, World& world, ContentWatcher& watcher,
+                const std::function<void()>& takeShot) {
+    const std::vector<std::string> t = splitTokens(line);
+    if (t.empty()) return;
+    const std::string& cmd = t[0];
+
+    if (cmd == "help") {
+        con.print("命令（都是 ASCII，不用切输入法）：");
+        con.print("  help                 这份帮助");
+        con.print("  cls                  清屏");
+        con.print("  ambient <亮度|r g b> 环境光，例如 ambient 0.1 或 ambient 0.3 0.4 0.6");
+        con.print("  light <强度>         主光，例如 light 60");
+        con.print("  light <灯号> <强度>  指定某一盏，例如 light 0 60 / light 1 30");
+        con.print("                       （灯号就是 content/lighting.txt 里的编号）");
+        con.print("  inspect [材质名]     看材质参数（不给名字就列出全部）");
+        con.print("  reload               重新读 content/ 的数据文件（= 按 R）");
+        con.print("  shot                 现在存一张干净的 PNG（不含面板）到 shots/");
+        con.print("小提示：改 content/*.txt 再敲 reload，比敲命令更接近「做美术」这件事。");
+        return;
+    }
+
+    if (cmd == "cls") {
+        con.clear();
+        return;
+    }
+
+    if (cmd == "ambient") {
+        std::vector<float> v;
+        for (size_t i = 1; i < t.size(); ++i) {
+            float f = 0.0f;
+            if (detail::parseNumber(t[i], f)) v.push_back(f);
+        }
+        if (v.size() == 1) v = {v[0], v[0], v[0]};
+        if (v.size() != 3) {
+            con.printError("用法：ambient <亮度> 或 ambient <r> <g> <b>，例如 ambient 0.1");
+            return;
+        }
+        world.ambient = Vec3{v[0], v[1], v[2]};
+        con.printOk("环境光 = " + joinFloats(v) + "（按 R 或用文件里的值会把它盖回去）");
+        return;
+    }
+
+    if (cmd == "light") {
+        int idx = 0;
+        float value = 0.0f;
+        if (t.size() == 2 && detail::parseNumber(t[1], value)) {
+            // light 60 —— 只有一盏灯的场景里不该逼学生先记住灯号
+        } else if (t.size() == 3 && detail::parseInt(t[1], idx) && detail::parseNumber(t[2], value)) {
+            // light 1 30
+        } else {
+            con.printError("用法：light <强度> 或 light <灯号> <强度>，例如 light 60 / light 1 30");
+            return;
+        }
+        if (idx >= world.lightCount) {
+            con.printError("场景里只有 " + std::to_string(world.lightCount) + " 盏灯，没有第 " +
+                           std::to_string(idx) + " 盏");
+            return;
+        }
+        world.lights[idx].intensity = value;
+        con.printOk("第 " + std::to_string(idx) + " 盏灯强度 = " + joinFloats({value}));
+        return;
+    }
+
+    if (cmd == "inspect") {
+        if (t.size() == 1) {
+            con.print("场景里的材质（" + std::to_string(world.materialNames.size()) + " 个）：" +
+                      joinNames(world.materialNames));
+            return;
+        }
+        const int idx = world.findMaterial(t[1]);
+        if (idx < 0) {
+            con.printError("没有叫 \"" + t[1] + "\" 的材质。有的：" + joinNames(world.materialNames));
+            return;
+        }
+        const Material& m = world.materials[size_t(idx)];
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%s：albedo %.3f %.3f %.3f · 粗糙度 %.2f · 金属度 %.2f", t[1].c_str(),
+                      double(m.albedo.x), double(m.albedo.y), double(m.albedo.z), double(m.roughness),
+                      double(m.metallic));
+        con.print(buf);
+        if (m.albedoTexture != nullptr) {
+            std::snprintf(buf, sizeof(buf), "  带贴图，uv 平铺 %.2g x %.2g", double(m.uvScale.x),
+                          double(m.uvScale.y));
+            con.print(buf);
+        }
+        if (m.emissive.x > 0.0f || m.emissive.y > 0.0f || m.emissive.z > 0.0f) {
+            std::snprintf(buf, sizeof(buf), "  自发光 %.2f %.2f %.2f", double(m.emissive.x),
+                          double(m.emissive.y), double(m.emissive.z));
+            con.print(buf);
+        }
+        con.print("  想看它变样：改 content/materials.txt 里 material " + t[1] + " 那一段，存盘后敲 reload");
+        return;
+    }
+
+    if (cmd == "reload") {
+        std::vector<std::string> log;
+        const std::vector<std::string> changed = watcher.forceReload(world, &log);
+        bool hadError = false;
+        for (const std::string& l : log) {
+            // 解析错误长这样：「content/materials.txt:70: 未知字段 ...」，
+            // 汇总行以「  →」开头 —— 这两种要红着显示，否则学生划过去就当没看见
+            const bool looksLikeError = l.rfind("content/", 0) == 0 || l.rfind("  →", 0) == 0;
+            hadError = hadError || looksLikeError;
+            if (looksLikeError) {
+                con.printError(l);
+            } else {
+                con.print(l);
+            }
+        }
+        // 「读了几个文件」和「有几个文件生效」不是一回事：写坏的那个整份不生效，
+        // 所以有错的时候不能说「重新应用了 N 个文件」—— 学生会以为改动进去了。
+        if (changed.empty()) {
+            con.print("content/ 没有变化（和上次读进来的一模一样）");
+        } else if (hadError) {
+            con.print("重新读了 " + std::to_string(changed.size()) +
+                      " 个文件；报错的那几个整份没生效，其它照常");
+        } else {
+            con.printOk("重新应用了 " + std::to_string(changed.size()) + " 个文件");
+        }
+        return;
+    }
+
+    if (cmd == "shot") {
+        takeShot();
+        return;
+    }
+
+    con.printError("没有这个命令：" + cmd + "（敲 help 看全部命令）");
 }
 
 // ---------------------------------------------------------------- 自检
@@ -638,12 +822,186 @@ void testContent() {
     checkClose(w2.lights[0].intensity, 48.0f, 1e-5f, "content：content/lighting.txt 与代码默认值一致（主光强度）");
 }
 
+// 控制台自检。控制台是「学生唯一能对着画面打字的地方」，它的每一条交互都是承诺：
+// 字符进得去、退格删得掉、回车一定有回音、面板遮不住世界、缺字模也不白屏。
+void testConsole() {
+    // ① 输入编辑：只收 ASCII 可见字符（见 console.h 文件头 ①）
+    Console con;
+    con.typeChar('a');
+    con.typeChar(' ');
+    con.typeChar('1');
+    check(con.input() == "a 1", "控制台：ASCII 字符能进输入行");
+    con.typeChar('\n');
+    con.typeChar('\t');
+    con.typeChar(char(0x80));
+    check(con.input() == "a 1", "控制台：换行/制表/高位字节被挡在键盘外（不碰输入法也打不乱）");
+    con.backspace();
+    check(con.input() == "a ", "控制台：退格删掉最后一个字符");
+    con.backspace();
+    con.backspace();
+    con.backspace();
+    check(con.input().empty(), "控制台：连按退格删空之后不崩");
+
+    // ② 回车：先把「> 你敲的那行」写进历史，再交给命令处理器
+    Console c2;
+    std::string got;
+    int calls = 0;
+    c2.setHandler([&](const std::string& line) {
+        got = line;
+        ++calls;
+    });
+    for (char ch : std::string("ambient 0.5")) c2.typeChar(ch);
+    c2.submit();
+    check(calls == 1 && got == "ambient 0.5", "控制台：回车把整行交给命令处理器");
+    check(c2.lineCount() == 1 && c2.lineAt(0) == "> ambient 0.5", "控制台：回车先把「> 你敲的那行」写进历史");
+    check(c2.input().empty(), "控制台：回车后输入行清空");
+    c2.submit();
+    check(calls == 1 && c2.lineCount() == 1, "控制台：空行回车什么都不做（不报错、不回声）");
+
+    // ③ 命令的输出排在回声下面 —— 顺序就是因果顺序，学生一眼看清「我做了什么 / 发生了什么」
+    Console c3;
+    c3.setHandler([&](const std::string&) { c3.printOk("环境光 = 0.5 0.5 0.5"); });
+    c3.run("ambient 0.5");
+    check(c3.lineCount() == 2 && c3.lineAt(1).rfind("环境光", 0) == 0, "控制台：命令的输出排在「> 命令」下面");
+
+    // ④ run() == 敲完回车：--cmd 注入和真人打字必须走同一条路（截图里看得到的就是现场按得出来的）
+    Console c4;
+    int calls4 = 0;
+    c4.setHandler([&](const std::string&) { ++calls4; });
+    for (char ch : std::string("light 60")) c4.typeChar(ch);
+    c4.submit();
+    Console c5;
+    c5.setHandler([&](const std::string&) { ++calls4; });
+    c5.run("light 60");
+    check(calls4 == 2 && c4.lineCount() == c5.lineCount() && c4.lineAt(0) == c5.lineAt(0),
+          "控制台：--cmd 的 run() 和真人敲回车产生完全一样的历史");
+
+    // ⑤ cls 清屏
+    Console c6;
+    c6.print("一");
+    c6.print("二");
+    check(c6.lineCount() == 2, "控制台：输出进历史");
+    c6.clear();
+    check(c6.lineCount() == 0, "控制台：cls 清空历史");
+
+    // ⑥ 滚动缓冲封顶：玩一晚上也不能无限吃内存
+    Console c7;
+    for (int i = 0; i < Console::kMaxScrollback + 50; ++i) c7.print("第 " + std::to_string(i) + " 行");
+    check(c7.lineCount() == Console::kMaxScrollback, "控制台：历史行数封顶");
+    check(c7.lineAt(0).find("50 行") != std::string::npos, "控制台：封顶后丢的是最老的行");
+
+    // ⑦ 折行：中文没有空格可断，只能按「字」断
+    Font font;
+    const bool fontOk = font.loadFromFile("assets/font/pixel12.bin");
+    if (fontOk) {
+        const std::string longZh = "环境光太暗的话整个房间都看不清";  // 纯汉字，没有空格可断
+        const int maxW = 100;
+        const std::vector<std::string> rows = font.wrap(longZh, maxW);
+        check(rows.size() >= 2, "控制台：长中文行会折成多行");
+        bool allFit = true;
+        for (const std::string& r : rows)
+            if (font.measureLine(r) > maxW) allFit = false;
+        check(allFit, "控制台：折行后每一行都不超过面板宽度");
+        std::string joined;
+        for (const std::string& r : rows) joined += r;
+        check(joined == longZh, "控制台：折行不丢字、不切坏 UTF-8（拼回去和原文一模一样）");
+
+        // 面板窄到放不下一个字：也必须出得来（否则 draw 会原地打转）
+        size_t cpCount = 0;
+        for (size_t i = 0; i < longZh.size(); ++cpCount) utf8Next(longZh, i);
+        check(font.wrap(longZh, 3).size() == cpCount, "控制台：面板窄到放不下一个字时，一行一个字（不死循环）");
+        const std::vector<std::string> twoLn = font.wrap("第一行\n第二行", maxW);
+        check(twoLn.size() == 2 && twoLn[0] == "第一行", "控制台：原文里的换行会被保留");
+        check(font.wrap("", maxW).size() == 1, "控制台：空串折行后仍有一行（光标得有地方待）");
+    }
+
+    // ⑧ 面板：隐藏 = 一个像素都不碰；显示 = 只压暗底部，上半屏照常看得见世界
+    Framebuffer fb;
+    fb.resize(200, 200);
+    fb.clear(Vec3{1.0f, 1.0f, 1.0f});
+    const std::vector<Vec3> before = fb.color;
+    Console hidden;
+    hidden.print("测试");
+    hidden.draw(fb, font);
+    bool untouched = true;
+    for (size_t i = 0; i < fb.color.size(); ++i)
+        if (fb.color[i].x != before[i].x) untouched = false;
+    check(untouched, "控制台：隐藏时一个像素都不碰（不影响离屏逐像素比对）");
+
+    Console shown;
+    shown.setVisible(true);
+    shown.print("环境光 = 0.5 0.5 0.5 —— 面板只占下半屏，世界还在上面");
+    shown.draw(fb, font);
+    // 面板最高 = 7 行字 + 上下留白，所以这条线以上绝不该被动过
+    const int worstPanelTop = fb.height - (font.lineHeight() * Console::kVisibleRows + Console::kPadY * 2);
+    bool upperUntouched = true;
+    for (int y = 0; y < worstPanelTop; ++y)
+        for (int x = 0; x < fb.width; ++x)
+            if (fb.color[size_t(y) * size_t(fb.width) + size_t(x)].x != 1.0f) upperUntouched = false;
+    check(upperUntouched, "控制台：面板只压暗底部，上半屏的世界一点没动");
+    bool bottomLit = false;
+    bool bottomDarker = false;
+    for (int y = fb.height - 20; y < fb.height; ++y)
+        for (int x = 0; x < fb.width; ++x) {
+            const float v = fb.color[size_t(y) * size_t(fb.width) + size_t(x)].x;
+            if (v != 1.0f) bottomLit = true;
+            if (v < 0.5f) bottomDarker = true;  // 背景板 alpha 0.72 压过白色 → 0.29 左右
+        }
+    check(bottomLit, "控制台：面板真的画在画面底部");
+    check(bottomDarker, "控制台：面板底下是半透明的（世界被压暗，不是糊一块不透明色块）");
+
+    // ⑨ panelHeight() 是给 HUD 让位用的，必须和 draw() 真画出来的高度一模一样 ——
+    //    这里用「最高被改动的行」反推实际高度来对账（曾经真的叠在一起过）
+    auto topChangedRow = [](const Framebuffer& f) {
+        for (int y = 0; y < f.height; ++y)
+            for (int x = 0; x < f.width; ++x)
+                if (f.color[size_t(y) * size_t(f.width) + size_t(x)].x != 1.0f) return y;
+        return -1;
+    };
+    Console shortCon;
+    shortCon.setVisible(true);
+    shortCon.print("一行");
+    Framebuffer fb3;
+    fb3.resize(240, 200);
+    fb3.clear(Vec3{1.0f, 1.0f, 1.0f});
+    shortCon.draw(fb3, font);
+    check(topChangedRow(fb3) == fb3.height - shortCon.panelHeight(font, fb3.width),
+          "控制台：panelHeight() 和实际画出来的高度一致（HUD 才能正确让位，短面板）");
+
+    Console fullCon;
+    fullCon.setVisible(true);
+    for (int i = 0; i < 30; ++i) fullCon.print("第 " + std::to_string(i) + " 行");
+    Framebuffer fb4;
+    fb4.resize(240, 200);
+    fb4.clear(Vec3{1.0f, 1.0f, 1.0f});
+    fullCon.draw(fb4, font);
+    check(topChangedRow(fb4) == fb4.height - fullCon.panelHeight(font, fb4.width),
+          "控制台：panelHeight() 和实际画出来的高度一致（历史堆满、面板顶到上限）");
+    check(fullCon.panelHeight(font, fb4.width) <= font.lineHeight() * Console::kVisibleRows + Console::kPadY * 2,
+          "控制台：面板高度有上限（历史再多也最多占 kVisibleRows 行字）");
+
+    // ⑩ 字模整个没加载成功时也要能画（红块占位），绝不崩 —— 招新现场少一个文件不能白屏
+    Framebuffer fb5;
+    fb5.resize(200, 200);
+    fb5.clear(Vec3{1.0f, 1.0f, 1.0f});
+    Font noFont;
+    Console orphan;
+    orphan.setVisible(true);
+    orphan.print("字模没加载");
+    orphan.draw(fb5, noFont);
+    bool orphanPainted = false;
+    for (const Vec3& c : fb5.color)
+        if (c.x != 1.0f) orphanPainted = true;
+    check(orphanPainted, "控制台：字模没加载时也画得出（红块占位），不是白屏也不是崩溃");
+}
+
 int runSelfTest() {
     testMath();
     testRasterizer();
     testFont();
     testWorld();
     testContent();
+    testConsole();
     if (g_failures == 0) {
         std::printf("[selftest] %d 项检查全部通过\n", g_checks);
         return 0;
@@ -695,6 +1053,35 @@ int main(int argc, char** argv) {
     Rasterizer rz(args.threads);
     rz.resize(args.width, args.height);
 
+    // 控制台：面板本身完全不知道世界是什么，命令通过 handler 走出去（见 console.h 文件头的边界说明）。
+    // --cmd 注入走 con.run()，和真人敲回车是同一条路径 —— 离屏截图里能看到的，宣讲现场一定按得出来。
+    Console con;
+    con.setVisible(args.console);
+    con.print("数媒组工作室 · 控制台。敲 help 看全部命令，R 键重新读 content/。");
+    con.print("这个世界由 content/*.txt 决定：改文件 → 敲 reload → 画面当场变。");
+
+    int shotIndex = 0;
+    auto takeShot = [&]() {
+        // 先按「此刻的世界」重绘一帧再存。这样「刚改完数据就拍」拍到的一定是新样子，
+        // 而不是上一帧的旧画面 —— 离屏模式（--cmd）里更必须：那时一帧都还没渲染过。
+        rz.framebuffer().clear(kClearColor);
+        renderFrame(rz, scene, 0.0f);
+        // 故意画在面板之前：存的是「干净的世界」，面板挡住的底部也拍得全。
+        char path[64];
+        std::snprintf(path, sizeof(path), "shots/console_%02d.png", ++shotIndex);
+        const std::vector<uint8_t> rgb = rz.framebuffer().toRGB8(args.exposure, true);
+        if (writePNG(path, args.width, args.height, rgb.data())) {
+            con.printOk(std::string("已存 ") + path);
+        } else {
+            con.printError(std::string("写 PNG 失败：") + path + "（shots/ 目录在不在？）");
+        }
+    };
+    con.setHandler([&](const std::string& line) { runCommand(line, con, scene.world, watcher, takeShot); });
+    for (const std::string& c : args.cmds) con.run(c);
+    if (!args.cmds.empty()) {
+        for (int i = 0; i < con.lineCount(); ++i) std::printf("[console] %s\n", con.lineAt(i).c_str());
+    }
+
     std::printf("[dreamlab-rt] 渲染 %dx%d，%d 帧，线程 %s\n", args.width, args.height, args.frames,
                 args.threads > 0 ? std::to_string(args.threads).c_str() : "自动");
 
@@ -702,7 +1089,7 @@ int main(int argc, char** argv) {
     for (int f = 0; f < args.frames; ++f) {
         const float t = float(f) / 60.0f;
         const auto t0 = std::chrono::steady_clock::now();
-        rz.framebuffer().clear(Vec3{0.012f, 0.014f, 0.02f});
+        rz.framebuffer().clear(kClearColor);
         renderFrame(rz, scene, t);
         const auto t1 = std::chrono::steady_clock::now();
         totalMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -715,13 +1102,19 @@ int main(int argc, char** argv) {
                 avgMs > 0.0 ? 1000.0 / avgMs : 0.0, rz.lastRasterMs());
     std::printf("[dreamlab-rt] 画面平均亮度 %.4f\n", rz.framebuffer().meanLuminance());
 
-    if (args.hud) {
+    // 文字层（HUD / 控制台）是最后一步叠上去的：不进深度测试、不参与光照，
+    // 但和 3D 走同一条 ACES → sRGB 出口 —— 所以 UI 的颜色也得给线性 HDR 值。
+    if (args.hud || con.visible()) {
         // 故意不检查返回值：字模加载失败时 Font 会画红块占位（绝不白屏），
         // 修复提示已经由 loadFromFile 打到 stderr 上了。
         Font font;
         font.loadFromFile("assets/font/pixel12.bin");
-        drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0));
-        std::printf("[dreamlab-rt] HUD 已叠加，缺字 %d 个\n", font.missingGlyphs());
+        // 先问面板要占多高，状态栏好让开；画面板本身放在最后（后画的盖住先画的）
+        const int inset = con.panelHeight(font, args.width);
+        if (args.hud) drawHud(rz.framebuffer(), font, float(avgMs > 0.0 ? 1000.0 / avgMs : 0.0), inset);
+        if (con.visible()) con.draw(rz.framebuffer(), font);
+        std::printf("[dreamlab-rt] 文字层已叠加（控制台 %d 行，面板 %d px），缺字 %d 个\n", con.lineCount(),
+                    inset, font.missingGlyphs());
     }
 
     const std::vector<uint8_t> rgb = rz.framebuffer().toRGB8(args.exposure, true);

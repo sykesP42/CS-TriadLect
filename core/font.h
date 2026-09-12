@@ -237,6 +237,38 @@ public:
     // 本次运行累计碰到多少个字集里没有的字（诊断用）
     int missingGlyphs() const { return missing_; }
 
+    // 按像素宽度折行。中文没有空格可断，所以只能按"字"断，不能按词断。
+    // 保证：每行的 measureLine() <= maxWidth（除非单个字本身就比 maxWidth 宽，
+    // 那时那一行只有它自己 —— 否则会死循环）。
+    std::vector<std::string> wrap(const std::string& utf8, int maxWidth) const {
+        std::vector<std::string> lines;
+        if (maxWidth < 1) maxWidth = 1;
+        std::string cur;
+        int curW = 0;
+        size_t i = 0;
+        while (i < utf8.size()) {
+            if (utf8[i] == '\n') {
+                lines.push_back(cur);
+                cur.clear();
+                curW = 0;
+                ++i;
+                continue;
+            }
+            const size_t start = i;
+            const uint32_t cp = utf8Next(utf8, i);
+            const int w = advanceOf(cp);
+            if (curW + w > maxWidth && !cur.empty()) {
+                lines.push_back(cur);
+                cur.clear();
+                curW = 0;
+            }
+            cur.append(utf8, start, i - start);
+            curW += w;
+        }
+        if (!cur.empty() || lines.empty()) lines.push_back(cur);
+        return lines;
+    }
+
 private:
     static uint32_t readU32(const uint8_t* p) {
         return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);

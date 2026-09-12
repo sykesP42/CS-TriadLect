@@ -1,7 +1,8 @@
 build/
 build-cmake/
 saved/
-shots/
+shots/*
+!shots/.gitkeep
 tools/.cache/
 *.exe
 *.obj
