@@ -853,9 +853,12 @@ void interact(Scene& s, Console& con, Toast& toast, double now) {
 
 // ---------------------------------------------------------------- 开窗模式
 int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Console& con,
-              const std::function<void()>& takeShot, Toast& toast, Judge& judge, LevelRuntime& rt) {
+              const std::function<void()>& takeShot, Toast& toast, Judge& judge, LevelRuntime& rt,
+              Settings& settings, int& resIndex) {
     Font font;
     font.loadFromFile("assets/font/pixel12.bin");  // 失败会画红块占位，绝不白屏
+
+    Menu menu;  // Esc 叫出来的暂停菜单
 
     const std::vector<WalkStep> walk = parseWalk(args.walk);
     const bool autopilot = !args.walk.empty();
@@ -942,13 +945,24 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
 
         const FrameInput& pi = win.input();
 
+        // 菜单/控制台开着时，不接受"点一下就抓鼠标" —— 否则点菜单的那一下会把鼠标锁走，
+        // 光标跳到窗口中心，菜单就点不动了。（见 platform.h 的 setClickToCapture）
+        win.setClickToCapture(!(con.visible() || menu.visible()));
+
         // ---- 全局按键
+        // Esc 的三级优先级：控制台 → 菜单 → 打开菜单。
+        // **不再直接退出** —— 那是以前的行为，想关控制台手滑按两下，游戏就没了。
+        // 退出改到菜单里主动点（见下面的 MenuAction::Quit）。
         if (pi.pressed[int(Key::Esc)]) {
             if (con.visible()) {
                 con.setVisible(false);
                 win.setMouseCaptured(true);  // 刚按 Esc 的人一定在窗口里，直接回到"鼠标看视角"
+            } else if (menu.visible()) {
+                menu.setVisible(false);
+                win.setMouseCaptured(true);
             } else {
-                break;  // 控制台没开 → Esc 退出
+                menu.setVisible(true);
+                win.setMouseCaptured(false);  // 菜单要用鼠标点，必须放开
             }
         }
         // ~ 不再是"叫出控制台"的快捷键：控制台是世界里的那台终端，得走过去按 E 才打得开
@@ -989,8 +1003,11 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         }
 
         // ---- 走一步
-        const InputState in = autopilot ? walkInputAt(walk, frame)
-                                        : (con.visible() ? InputState{} : fromWindowInput(pi));
+        // 控制台或菜单开着的时候玩家输入清零（= 暂停）—— 同一套机制，
+        // 不然敲命令/点菜单会顺手把人挪走。
+        const InputState in =
+            autopilot ? walkInputAt(walk, frame)
+                      : ((con.visible() || menu.visible()) ? InputState{} : fromWindowInput(pi));
         updatePlayer(scene.player, in, scene.world, dt);
         syncCamera(scene);
         if (in.interact) interact(scene, con, toast, now);
@@ -1008,6 +1025,44 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         if (rt.status.passed()) rt.goals = markLevelDone(rt.goals, rt.index);
         wasPassed = rt.status.passed();
 
+        // ---- 暂停菜单：喂进当前进度、收下点击、就地应用设置
+        // 放在判定之后：菜单里显示的进度必须是这一帧的（上面那段可能刚把 rt.index
+        // 推到下一关，所以这里重新取 levelAt(rt.index)，不用上面那个 lv 引用）。
+        if (menu.visible()) {
+            const Level& lvNow = levelAt(rt.index);
+            menu.setModel(MenuModel{lvNow.title, lvNow.goal, progressPercent(rt.status),
+                                    rt.status.passed()});
+            menu.setDisplay(resIndex, settings.mode);
+            const MenuAction act =
+                menu.update(pi, rz.framebuffer().width, rz.framebuffer().height, font);
+
+            if (act.kind == MenuAction::Quit) break;  // 走正常退出路径（退出时会写存档）
+            if (act.kind == MenuAction::Resume) {
+                menu.setVisible(false);
+                win.setMouseCaptured(true);
+            } else if (act.kind == MenuAction::SetResolution || act.kind == MenuAction::SetMode) {
+                const int newIndex = act.kind == MenuAction::SetResolution ? act.value : resIndex;
+                const WindowMode newMode =
+                    act.kind == MenuAction::SetMode ? WindowMode(act.value) : settings.mode;
+                const Resolution r = kResolutions[newIndex];
+
+                win.setWindowMode(newMode, r.w, r.h);
+                // 渲染分辨率永远是表里那一档，和窗口模式无关 ——
+                // 全屏只是把这一档拉伸铺满屏幕。也**不乘 --scale**：
+                // 菜单里选的就是渲染分辨率，再叠一层缩放会让人对不上号。
+                rz.resize(r.w, r.h);
+
+                settings.mode = newMode;
+                settings.width = r.w;
+                settings.height = r.h;
+                resIndex = newIndex;
+                // 立刻落盘：改完设置崩了不该丢（几行的文本文件，写它很便宜）
+                if (!saveSettings(settings, kSettingsPath)) {
+                    toast.show("设置没能存下来（saved/ 写不进去）", now, 3.0);
+                }
+            }
+        }
+
         // ---- 画一帧
         rz.framebuffer().clear(kClearColor);
         renderFrame(rz, scene, float(now), true);  // 开窗这一路才给随身微光
@@ -1023,11 +1078,18 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         goal.progress = rt.status.progress;
         goal.passed = rt.status.passed();
         drawHud(rz.framebuffer(), font, fps, inset, autopilot ? kAutopilotHint : kWindowHint, goal);
-        const World::RayHit look = scene.world.castRay(scene.player.eye(), scene.player.forward(), Player::kReach);
-        drawCrosshair(rz.framebuffer(), font,
-                      look.entity >= 0 ? scene.world.entities[size_t(look.entity)].prompt : std::string(),
-                      toast.alive(now) ? toast.text : std::string());
+        // 菜单开着时不画准星：它和它的提示文字会从菜单的半透明遮罩下透出来，糊在面板中间。
+        // （HUD 留着 —— 它在面板外面，被压暗之后正好当背景信息。）
+        if (!menu.visible()) {
+            const World::RayHit look =
+                scene.world.castRay(scene.player.eye(), scene.player.forward(), Player::kReach);
+            drawCrosshair(rz.framebuffer(), font,
+                          look.entity >= 0 ? scene.world.entities[size_t(look.entity)].prompt
+                                           : std::string(),
+                          toast.alive(now) ? toast.text : std::string());
+        }
         if (con.visible()) con.draw(rz.framebuffer(), font);
+        if (menu.visible()) menu.draw(rz.framebuffer(), font);  // 最后画：盖住 HUD 和控制台
 
         rz.framebuffer().toRGB8Into(rgbFrame, args.exposure, true, args.threads);
         win.present(rgbFrame, rz.framebuffer().width, rz.framebuffer().height);
@@ -2614,6 +2676,23 @@ int main(int argc, char** argv) {
     // （漏了这一条的话，不给 --shot 的 --all-levels 会掉进开窗路径 —— 参数被整个
     //   忽略、窗口开着一直跑，看起来就像"命令没反应"。）
     const bool windowed = !args.hasShot && !args.allLevels;
+
+    // ---- 画面设置（暂停菜单那一层）
+    // 读得到就用上次存的；读不到就用 --width/--height（也就是"按核数自适应"算出来的那个）。
+    // **无论走哪条路，都过一遍 nearestResolutionIndex 收进 kResolutions** ——
+    // 那张表封顶 720p，所以这台机器上按核数算出来的 1600x900 会变成 1280x720。
+    // 离屏那条路完全不读它（截图比对脚本指着精确的 --width/--height）。
+    Settings settings;
+    if (!loadSettings(kSettingsPath, settings)) settings.mode = WindowMode::Windowed;
+    if (windowed) {
+        const int wantW = settings.width > 0 ? settings.width : args.width;
+        const int wantH = settings.height > 0 ? settings.height : args.height;
+        const int idx = nearestResolutionIndex(wantW, wantH);
+        settings.width = kResolutions[idx].w;
+        settings.height = kResolutions[idx].h;
+    }
+    int resIndex = nearestResolutionIndex(settings.width, settings.height);
+
     if (args.reset) {
         clearSave();
         std::printf("[存档] 已清空 %s\n", kSavePath);
@@ -2697,9 +2776,10 @@ int main(int argc, char** argv) {
     }
 
     // --scale 只在开窗时有意义：离屏出图的像素数必须严格等于 --width/--height
-    // （截图比对脚本都指着这个），所以渲染分辨率按模式定下来，不再变。
-    const int renderW = windowed ? args.width / args.scale : args.width;
-    const int renderH = windowed ? args.height / args.scale : args.height;
+    // （截图比对脚本都指着这个），所以渲染分辨率按模式定下来。
+    // 开窗时渲染分辨率来自**设置里那一档**（封顶 720p），--scale 再降采样。
+    const int renderW = windowed ? settings.width / args.scale : args.width;
+    const int renderH = windowed ? settings.height / args.scale : args.height;
     Rasterizer rz(args.threads);
     rz.resize(renderW, renderH);
 
@@ -2730,11 +2810,16 @@ int main(int argc, char** argv) {
     // 而不是报个错什么都看不着 —— 这个项目的第一课是"几条命令就能跑起来"。
     if (windowed) {
         Window win;
-        if (win.open(args.width, args.height, kWindowTitle)) {
+        if (win.open(settings.width, settings.height, kWindowTitle)) {
+            // 开局就按上次存的模式摆好（open() 只开一个普通窗口，模式在这里补上）
+            if (settings.mode != WindowMode::Windowed) {
+                win.setWindowMode(settings.mode, settings.width, settings.height);
+            }
             // --cmd 在开窗模式下也在进场前跑一遍：离屏那边一直是这样，两边保持一致，
             // "脚本按得出来的"和"宣讲现场真人按得出来的"才是同一条路。
             for (const std::string& c : args.cmds) con.run(c);
-            const int rc = runWindow(args, win, scene, rz, con, takeShot, toast, judge, rt);
+            const int rc =
+                runWindow(args, win, scene, rz, con, takeShot, toast, judge, rt, settings, resIndex);
             // --level N 是**临时覆盖**（--help 里写着"直接站在第 N 关，不看存档"），
             // 所以它也不该往存档里写 —— 对称。
             //

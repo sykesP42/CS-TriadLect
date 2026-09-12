@@ -15,6 +15,9 @@
 
 namespace dlab {
 
+// 和 save.bin 放同一个目录，但是**两个文件** —— --reset 只清进度，不动显示设置。
+constexpr const char* kSettingsPath = "saved/settings.txt";
+
 // 分辨率只放 16:9 的三档，而且**封顶 720p**：
 //   · 16:9 是因为全屏走的是"拉伸铺满"，非 16:9 会被拉变形；
 //   · 720p 封顶是因为这是纯 CPU 软渲染，再往上帧率撑不住。

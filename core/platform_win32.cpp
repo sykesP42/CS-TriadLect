@@ -121,10 +121,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_LBUTTONDOWN:
-            // 记在 setMouseCaptured 之前：菜单开着时鼠标本来就是松的，这一下是"点击"；
-            // 游戏里则是"点一下锁住鼠标"（第一人称的老规矩）。两件事都要能发生。
+            // 这一下永远算"点击"（菜单要用），但"顺手抓鼠标"是可关的 ——
+            // 菜单/控制台开着时游戏会把它关掉，否则点一下菜单鼠标就被锁走了。
             self->frameInput().mousePressed = true;
-            self->setMouseCaptured(true);
+            if (self->clickToCapture()) self->setMouseCaptured(true);
             return 0;
         case WM_KILLFOCUS:
             self->onLoseFocus();

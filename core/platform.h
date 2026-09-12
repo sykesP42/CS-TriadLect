@@ -105,6 +105,12 @@ public:
     void setMouseCaptured(bool on);
     bool mouseCaptured() const { return captured_; }
 
+    // "在窗口里点一下就抓鼠标"（第一人称的老规矩）。
+    // **菜单/控制台开着时必须关掉它** —— 否则"点一下菜单"会被当成"点一下画面"：
+    // 鼠标当场被锁走、光标还会跳到窗口中心，菜单就点不动了。
+    void setClickToCapture(bool on) { clickToCapture_ = on; }
+    bool clickToCapture() const { return clickToCapture_; }
+
     // 秒表：构造时算 0
     double time() const;
 
@@ -130,6 +136,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     bool captured_ = false;
+    bool clickToCapture_ = true;  // 见 setClickToCapture
     float mouseX_ = 0.0f;  // 客户区坐标；锁定鼠标时每帧回中心
     float mouseY_ = 0.0f;
     long long clockStart_ = 0;

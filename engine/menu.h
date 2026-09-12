@@ -51,9 +51,16 @@ public:
         int panelH = 0;
         int rowH = 0;
         int padX = 0;
+        int topPad = 0;    // 面板顶到"暂停"标题之间
+        int titleH = 0;    // "暂停"是 2 倍字号，高度要单独留
+        int titleGap = 0;  // 标题到第一行之间
+        int hintGap = 0;   // 最后一行到"按 Esc 回到游戏"之间
+        int hintH = 0;
+        int botPad = 0;
     };
     static Layout computeLayout(int fbW, int fbH, const Font& font);
     static int rowTop(const Layout& L, int row);
+    static int hintTop(const Layout& L);
 
     // 点 (mx,my) 落在第几行；没点中返回 -1。纯函数，可自检。
     static int rowAt(float mx, float my, int fbW, int fbH, const Font& font);
@@ -94,7 +101,16 @@ inline Menu::Layout Menu::computeLayout(int fbW, int fbH, const Font& font) {
     if (L.panelW > fbW - 40) L.panelW = fbW - 40;   // 小窗口下别超出画面
     L.rowH = font.lineHeight() * 2;
     L.padX = 18;
-    L.panelH = L.rowH * kRowCount + 28;
+    L.topPad = 12;
+    L.titleH = font.lineHeight() * 2;  // "暂停"用 2 倍字号画
+    L.titleGap = 12;
+    L.hintGap = 10;
+    L.hintH = font.lineHeight();
+    L.botPad = 12;
+    // 高度是**算出来的**，不是"行数 × 行高 + 一个拍脑袋的常数"——
+    // 上一版就是后者，结果标题压在"继续游戏"上、底部提示压在"退出游戏"上。
+    L.panelH = L.topPad + L.titleH + L.titleGap + L.rowH * kRowCount + L.hintGap + L.hintH +
+               L.botPad;
     if (L.panelH > fbH - 20) L.panelH = fbH - 20;
     L.panelX = (fbW - L.panelW) / 2;
     L.panelY = (fbH - L.panelH) / 2;
@@ -102,7 +118,11 @@ inline Menu::Layout Menu::computeLayout(int fbW, int fbH, const Font& font) {
 }
 
 inline int Menu::rowTop(const Layout& L, int row) {
-    return L.panelY + 14 + row * L.rowH;
+    return L.panelY + L.topPad + L.titleH + L.titleGap + row * L.rowH;
+}
+
+inline int Menu::hintTop(const Layout& L) {
+    return L.panelY + L.panelH - L.botPad - L.hintH;
 }
 
 inline int Menu::rowAt(float mx, float my, int fbW, int fbH, const Font& font) {
@@ -201,8 +221,10 @@ inline void Menu::draw(Framebuffer& fb, const Font& font) const {
 
     // 整屏压暗一层，让"暂停"这件事看得出来
     rect(fb, 0, 0, fb.width, fb.height, Vec3{0.0f, 0.0f, 0.0f}, 0.55f);
-    // 面板
-    rect(fb, L.panelX, L.panelY, L.panelW, L.panelH, panel, 0.92f);
+    // 面板。**不透明** —— 留一点点透明度的话，正对终端站着时笔记本电脑的亮屏会
+    // 从面板底下透出来一小块，正好落在面板中间，看着像画了个错东西。
+    // 周围那一圈压暗已经足够表达"游戏暂停了"。
+    rect(fb, L.panelX, L.panelY, L.panelW, L.panelH, panel, 1.0f);
     // 面板边框（细两条横线就够，别做花）
     rect(fb, L.panelX, L.panelY, L.panelW, 1, hot, 0.5f);
     rect(fb, L.panelX, L.panelY + L.panelH - 1, L.panelW, 1, hot, 0.5f);
@@ -211,7 +233,7 @@ inline void Menu::draw(Framebuffer& fb, const Font& font) const {
     char buf[192];
 
     // 标题行
-    font.drawLine(fb, textX, L.panelY + 8, "暂停", strong, 1.0f, 2);
+    font.drawLine(fb, textX, L.panelY + L.topPad, "暂停", strong, 1.0f, 2);
 
     auto rowColor = [&](int row) { return row == hoverRow_ ? strong : white; };
     auto highlight = [&](int row) {
@@ -275,7 +297,7 @@ inline void Menu::draw(Framebuffer& fb, const Font& font) const {
     font.drawLine(fb, textX + 12, rowTop(L, kRowQuit) + L.rowH / 3, "退出游戏", rowColor(kRowQuit));
 
     // 底部一句提示，免得有人不知道怎么回游戏
-    font.drawLine(fb, textX, L.panelY + L.panelH - font.lineHeight() - 4, "按 Esc 回到游戏", dim);
+    font.drawLine(fb, textX, hintTop(L), "按 Esc 回到游戏", dim);
 }
 
 }  // namespace dlab
