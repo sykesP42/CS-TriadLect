@@ -1654,6 +1654,13 @@ void testLevel() {
     check(lit.luminance > dark.luminance, "关卡：把两盏灯打开，评委机位确实更亮了");
     check(lit.progress >= dark.progress, "关卡：更亮的场景进度不会更低（判分方向是对的）");
 
+    // 判分要拍两张（开着灯 / 灯全关）才算得出"灯自己贡献了多少亮度"，而最后留在
+    // framebuffer 里的必须是"开着灯"的那张 —— 它就是关卡在 view.frame 里拿到的那张。
+    // 顺序一旦写反，关卡想自己量画面某个角落，量到的会是一张全黑的假图，
+    // 而且这种错在纯黑房间里看不出来（两张一样黑）。这里用开着灯的场景钉住它。
+    check(std::fabs(judge.frame().meanLuminance() - lit.luminance) < 1e-6f,
+          "关卡：交到关卡手里的 frame 是开着灯的那张真画面（不是「灯全关」那张）");
+
     // ③ 存档里的进度位掩码。它决定"下次进门要不要再欢呼一次"，所以读写都得对；
     //    而移位一旦越过 31 位在 C++ 里是未定义行为 —— 越界下标必须被拦住。
     check(!levelDone(0, 0) && levelDone(markLevelDone(0, 0), 0), "关卡：过关位掩码写进去、读得出来");

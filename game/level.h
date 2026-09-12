@@ -25,7 +25,11 @@ namespace dlab {
 struct LevelView {
     const World& world;        // 此刻的世界：灯亮不亮、材质什么样，数据都在这里
     const Framebuffer& frame;  // 评委机位看到的那张小图 —— 想量哪个角落自己量
-    float luminance;           // frame 的平均亮度（上一条最常用的那个数）
+    float luminance;           // frame 的平均亮度（把环境光、自发光、灯全算在内）
+    // 只看灯贡献的那部分亮度 = 「现在」减「把灯全关掉」。量两遍的原因见 level_registry.cpp：
+    // 绝对亮度会被环境光和别的关卡改的材质牵着走，这个差不会 —— 要判"灯把屋子照亮了吗"，
+    // 就该量它。
+    float lightLuminance;
 };
 
 // 一关。全是"描述"，没有一个字是"流程"—— 流程在 main.cpp 里。
@@ -83,7 +87,9 @@ constexpr int kJudgeHeight = 54;
 // 评委机位。不跟玩家走，也不参与玩家的画面 —— 它只负责"替关卡看一眼世界"。
 class Judge {
 public:
-    LevelStatus evaluate(const World& world, const Level& lv);
+    // world 是能改的：判定要拍两张（开着灯 / 关掉灯）才能把"灯的贡献"分出来，
+    // 拍第二张时会把灯临时关掉再放回去。见 level_registry.cpp 里的说明。
+    LevelStatus evaluate(World& world, const Level& lv);
     const Framebuffer& frame() const { return rz_.framebuffer(); }
 
 private:
