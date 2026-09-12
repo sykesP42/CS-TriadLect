@@ -32,6 +32,8 @@ Workshop buildWorkshop(World& w) {
     const int mKeyboard = w.addMesh("keyboard", makeBox(Vec3{0.3f, 0.012f, 0.11f}));
     const int mPedestal = w.addMesh("pedestal", makeCylinder(0.55f, 0.95f, 28));
     const int mOrb = w.addMesh("orb", makeSphere(0.45f, 36, 18));
+    const int mRefStand = w.addMesh("refStand", makeCylinder(0.13f, 1.2f, 20));  // 细柱：顶着材质样板
+    const int mRefOrb = w.addMesh("refOrb", makeSphere(0.20f, 28, 14));
     const int mLampBody = w.addMesh("lampBody", makeBox(Vec3{0.42f, 0.06f, 0.42f}));
     const int mBoard = w.addMesh("board", makeBox(Vec3{0.04f, 0.7f, 1.1f}));
     const int mShelf = w.addMesh("shelf", makeBox(Vec3{0.3f, 0.9f, 1.2f}));
@@ -66,19 +68,51 @@ Workshop buildWorkshop(World& w) {
 
     Material chrome;
     chrome.albedo = Vec3{0.95f, 0.93f, 0.90f};
-    chrome.roughness = 0.06f;
-    chrome.metallic = 1.0f;
+    chrome.roughness = 0.55f;   // 出厂是错的 —— 第 2 关「材质」要从这里改起，见下面 refChrome
+    chrome.metallic = 0.0f;     // 同上：出厂是错的
     ws.matChrome = w.addMaterial("chrome", chrome);
 
     Material plastic;
     plastic.albedo = Vec3{0.82f, 0.13f, 0.11f};
-    plastic.roughness = 0.26f;
+    plastic.roughness = 0.95f;  // 出厂是错的
+    plastic.metallic = 0.0f;
     ws.matPlastic = w.addMaterial("plastic", plastic);
 
     Material clay;
-    clay.albedo = Vec3{0.74f, 0.53f, 0.32f};
+    clay.albedo = Vec3{0.30f, 0.32f, 0.36f};  // 出厂是错的：陶土该是红棕色
     clay.roughness = 0.92f;
+    clay.metallic = 0.0f;
     ws.matClay = w.addMaterial("clay", clay);
+
+    // 材质样板（第 2 关的标准答案）。和上面三个球是同一套参数，只是这三个是对的。
+    // 为什么放在代码里、而不是 content/materials.txt 里：样板是"标准答案"，
+    // 学生要改的是展台上那三个球；把答案和题面放进同一个文件，改错一个字母
+    // 就可能把答案也改掉，然后"照着样板改"这件事就不成立了。
+    // locked 是这件事的最后一道门：光放在代码里还不够 —— content/ 能覆盖世界上
+    // 任何一份已有材质，学生（或者一次手滑）往 materials.txt 里写一段 ref_chrome，
+    // 样板就跟着变了。上锁之后那种写法会被挡回来，并告诉他"这是答案，改不动"。
+    // 三个球的代码默认值也故意是错的，和数据文件里一致 —— 数据文件被删掉/写坏时
+    // 退回代码默认，退回的必须还是"三个做错的球"，而不是白送过关（和第 1 关同理）。
+    Material refChrome;
+    refChrome.albedo = Vec3{0.95f, 0.93f, 0.90f};
+    refChrome.roughness = 0.06f;
+    refChrome.metallic = 1.0f;
+    refChrome.locked = true;
+    ws.matRefChrome = w.addMaterial("ref_chrome", refChrome);
+
+    Material refPlastic;
+    refPlastic.albedo = Vec3{0.82f, 0.13f, 0.11f};
+    refPlastic.roughness = 0.26f;
+    refPlastic.metallic = 0.0f;
+    refPlastic.locked = true;
+    ws.matRefPlastic = w.addMaterial("ref_plastic", refPlastic);
+
+    Material refClay;
+    refClay.albedo = Vec3{0.74f, 0.53f, 0.32f};
+    refClay.roughness = 0.92f;
+    refClay.metallic = 0.0f;
+    refClay.locked = true;
+    ws.matRefClay = w.addMaterial("ref_clay", refClay);
 
     Material stone;
     stone.albedo = Vec3{0.52f, 0.53f, 0.55f};
@@ -161,9 +195,13 @@ Workshop buildWorkshop(World& w) {
 
     // 三个展台 + 三个球：镜面 / 塑料 / 陶土。第 2 关「材质」就发生在这里。
     // 摆成右侧一列 —— 出生点正前方要留给桌子和终端，中间不能有东西挡视线。
+    // 每个球前面一米立着一根细柱、顶上顶着一个小球：那是"材质样板"，
+    // 这个球该长什么样，看它。球和样板一样高（1.4），比较的时候不用低头抬头。
     const float pedZ[3] = {-3.0f, -1.2f, 0.6f};
     const int orbMat[3] = {ws.matChrome, ws.matPlastic, ws.matClay};
     const char* orbName[3] = {"镜面球", "塑料球", "陶土球"};
+    const int refMat[3] = {ws.matRefChrome, ws.matRefPlastic, ws.matRefClay};
+    const char* refName[3] = {"样板镜面", "样板塑料", "样板陶土"};
     for (int i = 0; i < 3; ++i) {
         Entity ped = makeEntity("展台", mPedestal, ws.matStone, Vec3{3.6f, 0.475f, pedZ[i]});
         ped.name = std::string("展台") + char('A' + i);
@@ -173,6 +211,18 @@ Workshop buildWorkshop(World& w) {
         orb.prompt = "按 E 观察材质";
         orb.command = std::string("inspect ") + orbName[i];
         ws.entOrbs[i] = w.addEntity(orb);
+
+        // 样板柱很细，不挡路（solid = false）；样板球挂在与球同高的位置
+        Entity stand = makeEntity("样板柱", mRefStand, ws.matStone, Vec3{3.6f, 0.6f, pedZ[i] + 1.0f});
+        stand.name = std::string("样板柱") + char('A' + i);
+        stand.solid = false;
+        w.addEntity(stand);
+
+        Entity ref = makeEntity(refName[i], mRefOrb, refMat[i], Vec3{3.6f, 1.4f, pedZ[i] + 1.0f});
+        ref.solid = false;
+        ref.prompt = "按 E 读样板数值";
+        ref.command = std::string("inspect ") + refName[i];
+        ws.entRefOrbs[i] = w.addEntity(ref);
     }
 
     // ---------------------------------------------------------------- 光照

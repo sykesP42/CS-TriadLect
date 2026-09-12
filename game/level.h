@@ -46,6 +46,10 @@ struct Level {
 struct LevelStatus {
     float progress = 0.0f;
     float luminance = 0.0f;
+    // 只看灯贡献的那部分亮度（= 开着灯的绝对亮度 - 灯全关的绝对亮度）。
+    // 同一个数会原样传给关卡的 progress（见 LevelView::lightLuminance）；
+    // 放在这里是为了让它能被打印出来 —— 达标线是照它定的，定标的时候得看得见它。
+    float lightLuminance = 0.0f;
     bool passed() const { return progress >= 1.0f; }
 };
 
@@ -103,5 +107,6 @@ int findLevel(const std::string& id);  // 找不到返回 -1
 // 每一关实现在 game/levels/ 下，在这里认个脸
 const Level& levelDark();        // 第 0 关「黑暗」
 const Level& levelFirstLight();  // 第 1 关「第一束光」
+const Level& levelMaterial();    // 第 2 关「材质」
 
 }  // namespace dlab

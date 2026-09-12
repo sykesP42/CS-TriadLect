@@ -88,8 +88,8 @@ void printUsage() {
         "  --threads <数量>   渲染线程数（默认自动）\n"
         "  --exposure <倍数>  曝光（默认 1.0）\n"
         "  --fov <角度>       竖直视场角（默认用场景的 50°）\n"
-        "  --cam x,y,z        相机（眼睛）位置\n"
-        "  --look x,y,z       相机看向的点\n"
+        "  --cam x,y,z        相机（眼睛）位置（逗号隔开，写成 --cam 1.5,1.6,2 这样）\n"
+        "  --look x,y,z       相机看向的点（同上，逗号隔开）\n"
         "  --walk \"w:120,a:60\" 脚本输入：按 w 走 120 帧、再按 a 走 60 帧，e 是「按一下」\n"
         "                     键名 w a s d e，冒号后是帧数（60 帧 = 1 秒）。给了它就忽略键盘\n"
         "  --trace            每帧打印位置 / 朝向（开窗还带 work= 一帧干活的毫秒数、period= 帧间隔）\n"
@@ -119,6 +119,15 @@ bool parseVec3(const char* text, Vec3& out) {
     return std::sscanf(text, "%f,%f,%f", &out.x, &out.y, &out.z) == 3;
 }
 
+// 三元组写错了就直接报错退出，不悄悄当没给过。
+// 教训：以前这里是把解析失败吞进 hasCam=false 的，于是 "--cam 1 2 3"（用空格而不是逗号）
+// 会安静地什么都不做 —— 拍出来的图和没给 --cam 一模一样，人只会怀疑"相机参数坏了"。
+[[noreturn]] void badVec3(const char* name, const char* text) {
+    std::fprintf(stderr, "[错误] %s 需要三个数，用逗号隔开（例：--cam 1.5,1.6,2）；收到的是 \"%s\"\n",
+                 name, text);
+    std::exit(2);
+}
+
 Args parseArgs(int argc, char** argv) {
     Args a;
     for (int i = 1; i < argc; ++i) {
@@ -139,9 +148,13 @@ Args parseArgs(int argc, char** argv) {
         } else if (s == "--fov") {
             a.fovDeg = float(std::atof(takeValue(argc, argv, i, "--fov")));
         } else if (s == "--cam") {
-            a.hasCam = parseVec3(takeValue(argc, argv, i, "--cam"), a.cam);
+            const char* v = takeValue(argc, argv, i, "--cam");
+            if (!parseVec3(v, a.cam)) badVec3("--cam", v);
+            a.hasCam = true;
         } else if (s == "--look") {
-            a.hasLook = parseVec3(takeValue(argc, argv, i, "--look"), a.look);
+            const char* v = takeValue(argc, argv, i, "--look");
+            if (!parseVec3(v, a.look)) badVec3("--look", v);
+            a.hasLook = true;
         } else if (s == "--preview") {
             a.preview = true;
             // 文本是可选的；后面跟着的不是选项就当作要预览的文本
@@ -405,10 +418,12 @@ void printLevelBriefing(Console& con, const LevelRuntime& rt) {
     con.print(buf);
     con.print(lv.hint);
     if (rt.status.passed()) {
-        std::snprintf(buf, sizeof(buf), "已经过关了（评委机位亮度 %.4f）", double(rt.status.luminance));
+        std::snprintf(buf, sizeof(buf), "已经过关了（评委机位亮度 %.4f，其中灯贡献 %.4f）",
+                      double(rt.status.luminance), double(rt.status.lightLuminance));
     } else {
-        std::snprintf(buf, sizeof(buf), "现在 %d%%（评委机位亮度 %.4f）", progressPercent(rt.status),
-                      double(rt.status.luminance));
+        std::snprintf(buf, sizeof(buf), "现在 %d%%（评委机位亮度 %.4f，其中灯贡献 %.4f）",
+                      progressPercent(rt.status), double(rt.status.luminance),
+                      double(rt.status.lightLuminance));
     }
     con.print(buf);
 }
@@ -1564,13 +1579,27 @@ void testContent() {
     check(edit.lights[0].hasPos && !edit.lights[0].hasColor && !edit.lights[0].hasRadius,
           "content：只写 pos 的那一行，只动 pos（不动 color / radius）");
 
-    // ⑤ 名字写错：不能崩、不能误改，还要把可用的名字列出来
+    // ⑤ 名字写错 / 名字写对但上了锁：两种「写了却没生效」都要出声，不能悄悄吞掉。
+    //    前者会把可用的名字列出来（学生最容易踩的坑），后者要点明「这是标准答案，改不动」。
     const ContentPatch typoName = parseContent("material 镜面球 { roughness 0.5 }\n", "t");
     std::vector<std::string> log2;
     st = applyContent(w, typoName, &log2);
     check(st.missing == 1 && st.materials == 0, "content：世界里没有的材质名记为「没对上号」");
     check(log2.size() == 1 && log2[0].find("chrome") != std::string::npos, "content：名字写错时列出可用的材质名");
     checkClose(w.materials[size_t(chrome)].roughness, 0.99f, 1e-6f, "content：名字写错不会误改到别的材质");
+
+    // 样板是第 2 关的标准答案，上着锁。这条挡的是"把卷子抄了"那种过关：
+    // 学生把样板也改成球现在的乱值，两边一样，第 2 关就白送 100%。
+    const int refChrome = w.findMaterial("ref_chrome");
+    check(refChrome >= 0, "content：世界里真的有 ref_chrome 这份样板材质");
+    const ContentPatch tamper = parseContent("material ref_chrome { albedo 0.98 0.97 0.96  roughness 0.55  metallic 0.0 }\n", "t");
+    std::vector<std::string> logLock;
+    st = applyContent(w, tamper, &logLock);
+    check(st.locked == 1 && st.materials == 0, "content：样板材质上着锁，写了不生效（也不算进「应用成功」）");
+    check(logLock.size() == 1 && logLock[0].find("标准答案") != std::string::npos,
+          "content：写到上锁的材质时，明说「这是标准答案，改不动」");
+    checkClose(w.materials[size_t(refChrome)].roughness, 0.06f, 1e-6f, "content：样板被写了一把，数值一动没动");
+    checkClose(w.materials[size_t(refChrome)].albedo.x, 0.95f, 1e-6f, "content：样板被写了一把，颜色也一动没动");
 
     // ⑥ 仓库里真正的那两个数据文件：语法必须干净，而且每一项都要在场景里对得上号。
     //    否则学生看到的就是「改了没反应」，而原因只是一条没人看的警告。
@@ -1699,6 +1728,61 @@ void testLevel() {
 
     applyContent(w3, parseContent("material lamp { emissive 4.2 3.8 3.0 }\nlight 0 { pos 0 1.1 4.6 }\n", "t"), &log5);
     check(!judge.evaluate(w3, lv1).passed(), "关卡 1：灯罩亮了、光却还留在门口 —— 一样过不了关");
+
+    // ⑥ 第 2 关是「照着样板把材质改回来」：三个球各占三分之一，判定读的是九个数。
+    //    这一节把「1/3、2/3、3/3」的每一档都钉住，尤其是"三个球抄成同一个值"这条
+    //    最省事的歪路 —— 它必须只值三分之一，不能白送过关。
+    const Level& lv2 = levelAt(2);
+    // 注意：World 不能按值往外传 —— 地板的材质里存着指向 world.textures 的指针
+    // （Material::albedoTexture），拷贝一份世界会让那个指针指到已经析构的纹理上。
+    // 所以这里往调用者自己的世界里建，而不是 return 一个 World。
+    auto loadFresh = [&](World& dest) {
+        dest = World{};
+        buildWorkshop(dest);
+        std::vector<std::string> l;
+        for (const std::string& file : contentFileList()) applyContent(dest, loadContentFile(file), &l);
+    };
+    std::vector<std::string> log6;
+    World w4;
+    loadFresh(w4);
+    checkClose(judge.evaluate(w4, lv2).progress, 0.0f, 1e-6f, "关卡 2：出厂状态读 0%（一个球都没改对）");
+
+    applyContent(w4, parseContent("material chrome { albedo 0.95 0.93 0.90  roughness 0.06  metallic 1.0 }\n", "t"), &log6);
+    const LevelStatus one2 = judge.evaluate(w4, lv2);
+    checkClose(one2.progress, 1.0f / 3.0f, 1e-6f, "关卡 2：只把镜面球改对 = 三分之一");
+    check(progressPercent(one2) == 33, "关卡 2：改对一个球，进度条老实写 33%（不四舍五入成 33.333）");
+
+    applyContent(w4, parseContent("material plastic { albedo 0.82 0.13 0.11  roughness 0.26  metallic 0.0 }\n"
+                                  "material clay { albedo 0.74 0.53 0.32  roughness 0.92  metallic 0.0 }\n", "t"), &log6);
+    const LevelStatus solved2 = judge.evaluate(w4, lv2);
+    check(solved2.passed() && progressPercent(solved2) == 100, "关卡 2：三个球都照着样板改对了才过关");
+
+    // 判定读数据、不读画面 —— 把灯全关掉，已经改对的还是 100%，没改对的还是 0%。
+    // 这条是这一关"摸黑也能过"那句话的凭据：学生跳过第 1 关直接进来，判定照样成立。
+    applyContent(w4, parseContent("light 0 { intensity 0 }\nlight 1 { intensity 0 }\n", "t"), &log6);
+    check(judge.evaluate(w4, lv2).passed(), "关卡 2：房间全黑，改对的就是改对了（判定读的是数据不是画面）");
+    World w5;
+    loadFresh(w5);
+    applyContent(w5, parseContent("light 0 { intensity 0 }\nlight 1 { intensity 0 }\n", "t"), &log6);
+    checkClose(judge.evaluate(w5, lv2).progress, 0.0f, 1e-6f, "关卡 2：房间全黑，没改对的也还是 0%（黑暗帮不上忙）");
+
+    // 歪路一：三个球抄成同一个值（比如都抄成样板镜面的数）。这不是"改对"，是"改成一样"。
+    World w6;
+    loadFresh(w6);
+    applyContent(w6, parseContent("material chrome  { albedo 0.95 0.93 0.90  roughness 0.06  metallic 1.0 }\n"
+                                  "material plastic { albedo 0.95 0.93 0.90  roughness 0.06  metallic 1.0 }\n"
+                                  "material clay    { albedo 0.95 0.93 0.90  roughness 0.06  metallic 1.0 }\n", "t"), &log6);
+    const LevelStatus same2 = judge.evaluate(w6, lv2);
+    check(!same2.passed() && progressPercent(same2) == 33,
+          "关卡 2：三个球抄成同一个值只值三分之一（判定是球 vs 自己的样板，不是三球互比）");
+
+    // 歪路二：把样板改成球现在的样子（改考卷）。样板上了锁，写不进去 —— 进度还是 0%。
+    // 这条要是红了，说明"答案不在数据文件里"那句话是假的。
+    World w7;
+    loadFresh(w7);
+    applyContent(w7, parseContent("material ref_chrome { albedo 0.98 0.97 0.96  roughness 0.55  metallic 0.0 }\n"
+                                  "material ref_clay   { albedo 0.30 0.32 0.36 }\n", "t"), &log6);
+    checkClose(judge.evaluate(w7, lv2).progress, 0.0f, 1e-6f, "关卡 2：改样板（改考卷）不算过关，进度还是 0%");
 }
 
 // 控制台自检。控制台是「学生唯一能对着画面打字的地方」，它的每一条交互都是承诺：
@@ -2059,8 +2143,9 @@ int main(int argc, char** argv) {
     {
         const Level& lv = levelAt(rt.index);
         rt.status = judge.evaluate(scene.world, lv);
-        std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f）\n", lv.title, lv.goal,
-                    progressPercent(rt.status), double(rt.status.luminance));
+        std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f，其中灯贡献 %.4f）\n", lv.title,
+                    lv.goal, progressPercent(rt.status), double(rt.status.luminance),
+                    double(rt.status.lightLuminance));
         if (rt.status.passed()) {
             // 开场就已经过关，有两种情形，要分开：
             //   · 存档记着"这关以前就过了"    → 平静地提一句，别再欢呼一次；
@@ -2208,8 +2293,9 @@ int main(int argc, char** argv) {
     // 判定的"收卷"必须发生在这一切之后，否则截的图和量出来的进度说的不是同一件事。
     const Level& lv = levelAt(rt.index);
     rt.status = judge.evaluate(scene.world, lv);
-    std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f）\n", lv.title, lv.goal,
-                progressPercent(rt.status), double(rt.status.luminance));
+    std::printf("[关卡] %s · 目标「%s」· 进度 %d%%（评委机位亮度 %.4f，其中灯贡献 %.4f）\n", lv.title,
+                lv.goal, progressPercent(rt.status), double(rt.status.luminance),
+                double(rt.status.lightLuminance));
 
     // 文字层（HUD / 控制台）是最后一步叠上去的：不进深度测试、不参与光照，
     // 但和 3D 走同一条 ACES → sRGB 出口 —— 所以 UI 的颜色也得给线性 HDR 值。

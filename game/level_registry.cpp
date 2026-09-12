@@ -14,6 +14,7 @@ namespace {
 const Level* const kLevels[] = {
     &levelDark(),        // 第 0 关
     &levelFirstLight(),  // 第 1 关
+    &levelMaterial(),    // 第 2 关
 };
 
 constexpr int kLevelCount = int(sizeof(kLevels) / sizeof(kLevels[0]));
@@ -71,8 +72,9 @@ LevelStatus Judge::evaluate(World& world, const Level& lv) {
 
     LevelStatus st;
     st.luminance = lightsOn;
+    st.lightLuminance = lightsOn - lightsOff;
     if (lv.progress != nullptr) {
-        const LevelView view{world, rz_.framebuffer(), lightsOn, lightsOn - lightsOff};
+        const LevelView view{world, rz_.framebuffer(), lightsOn, st.lightLuminance};
         st.progress = clampf(lv.progress(view), 0.0f, 1.0f);
     }
     return st;

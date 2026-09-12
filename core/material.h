@@ -19,6 +19,11 @@ struct Material {
     int wrapMode = kWrapRepeat;
     int filterMode = kFilterBilinear;
 
+    // 上锁 = content/*.txt 改不动它，改到它就报一行"这块被锁了"。
+    // 用在哪：第 2 关「材质」的样板球。样板是那一关的标准答案，答案要是能跟着
+    // 数据文件一起被改，学生把样板也改成乱的值就能"过关" —— 那不是过关，是把卷子抄了。
+    bool locked = false;
+
     // 取某一个 uv 处的漫反射色（有贴图就采样，没有就用常量 albedo）
     Vec3 albedoAt(Vec2 uv) const {
         if (!albedoTexture || !albedoTexture->valid()) return albedo;

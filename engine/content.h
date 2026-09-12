@@ -80,6 +80,7 @@ struct ApplyStats {
     int lights = 0;
     int env = 0;
     int missing = 0;  // 文件里写了、世界里却没有的名字
+    int locked = 0;   // 文件里写了、但这份材质上了锁（关卡的标准答案）
 };
 
 // log 非空时把人类可读的行写进 log（游戏内控制台面板要用），否则直接打到 stdout/stderr。
@@ -526,6 +527,15 @@ inline ApplyStats applyContent(World& world, const ContentPatch& patch, std::vec
             continue;
         }
         Material& m = world.materials[size_t(idx)];
+        if (m.locked) {
+            // 上锁的材质：写了也不生效。这里必须出声 —— 悄悄忽略会让学生以为
+            // "改动生效了但画面没变"，然后去怀疑渲染管线，而不是怀疑自己改错了地方。
+            detail::emit(log, true, patch.file + ":" + std::to_string(mp.line) + ": \"" + mp.name +
+                                        "\" 是关卡的标准答案，上着锁 —— content/ 改不动它。"
+                                        "要改的是展台上那三个球（chrome / plastic / clay）。");
+            ++st.locked;
+            continue;
+        }
         if (mp.hasAlbedo) m.albedo = mp.albedo;
         if (mp.hasRoughness) m.roughness = mp.roughness;
         if (mp.hasMetallic) m.metallic = mp.metallic;
