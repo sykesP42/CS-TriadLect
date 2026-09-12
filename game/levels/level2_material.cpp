@@ -107,6 +107,10 @@ const Level& make() {
         l.title = "第 2 关 · 材质";
         l.goal = "照着样板，把三个球的材质改回来";
         l.hint = kHint;
+        l.passNote =
+            "你刚才干的就是技术美术的日常：别人给你一个目标结果（旁边那根样板），"
+            "你要找出对应的那组数字。roughness 管高光糊不糊、metallic 管反不反射环境 —— "
+            "这两个数你能凭画面反推出来了，这就是这份工作最核心的手感。";
         l.judge = judgeCamera();
         l.progress = progressMaterial;
         return l;

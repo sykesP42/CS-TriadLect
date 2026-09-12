@@ -117,6 +117,9 @@ const Level& make() {
         l.title = "第 1 关 · 第一束光";
         l.goal = "把主光装回吊灯里并点亮，让展台亮起来";
         l.hint = kHint;
+        l.passNote =
+            "记住这一个：把灯挪回吊灯，比把它拧到 500 有用得多 —— 亮度按距离平方衰减，"
+            "距离翻一倍就只剩四分之一。位置比强度重要，这是灯光这行的第一课。";
         l.judge = judgeCamera();
         l.progress = progressFirstLight;
         return l;

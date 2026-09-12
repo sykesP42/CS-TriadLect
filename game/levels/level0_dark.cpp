@@ -59,6 +59,10 @@ const Level& levelDark() {
         l.title = "第 0 关 · 黑暗";
         l.goal = "让房间重新亮起来";
         l.hint = kHint;
+        l.passNote =
+            "而且注意一件事：你刚才改的是 C++、还重新编译了一次 —— 可回到游戏里，"
+            "你还站在离开时的那个位置。位置存在 saved/save.bin 里，这就是「存档续玩」。"
+            "改代码不用怕丢进度。";
         l.judge = judgeCamera();
         l.progress = progressDark;
         return l;

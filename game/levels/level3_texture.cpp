@@ -90,6 +90,10 @@ const Level& make() {
         l.title = "第 3 关 · 纹理";
         l.goal = "把地板铺成方格砖：平铺 4×4、repeat、bilinear";
         l.hint = kHint;
+        l.passNote =
+            "四关走完了。光栅化、光照、材质、纹理 —— 这条渲染管线你已经亲手过了一遍，"
+            "而且改的每一处都当场看见了结果。这就是数媒组每天在做的事。\n"
+            "接下来想继续玩：改 content/*.txt 自己配色，或者去读 core/raster.cpp（那 300 行是引擎的心脏）。";
         l.judge = judgeCamera();
         l.progress = progressTexture;
         return l;

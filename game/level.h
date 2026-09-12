@@ -38,6 +38,10 @@ struct Level {
     const char* title = "";                       // "第 0 关 · 黑暗"
     const char* goal = "";                        // HUD 上那一行
     const char* hint = "";                        // 走到终端按 E，终端把这段话念给你听
+    // 过关那一下补的一句。每关的"高光"不一样 —— 第 0 关是"你改的是代码、重编译过，
+    // 可你还站在原地"，第 2 关是"你今天干的就是技术美术的活"。写在关卡里而不是
+    // 写在流程里，是因为它是这一关的教学点，不是通用的客套话。
+    const char* passNote = "";
     Camera judge;                                 // 评委机位
     float (*progress)(const LevelView&) = nullptr;  // 0 = 刚进门，1 = 过关
 };

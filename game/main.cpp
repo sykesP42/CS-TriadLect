@@ -868,13 +868,40 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
 
     // 过关的这句话是整个循环里唯一的奖励，喊多了就不值钱了，所以只有一个地方喊。
     // 后面接的那句"下面是下一关"由推进关卡的那段补 —— 这里只管把"你做到了"喊出来。
+    // 过关的这句话是整个循环里唯一的奖励，喊多了就不值钱了，所以只有一个地方喊。
     auto announcePass = [&](const Level& lv, double now) {
         con.setVisible(true);
         con.printOk("目标达成：" + std::string(lv.goal));
-        toast.show("目标达成：" + std::string(lv.goal), now, 3.0);
+        // 每关补一句自己的话（见 Level::passNote）：过关那一下该说什么，是这一关的
+        // 教学点，不是通用客套。第 0 关是"你改的是代码、重编译过，可你还站在原地"。
+        if (lv.passNote != nullptr && lv.passNote[0] != '\0') con.print(lv.passNote);
+        toast.show("目标达成：" + std::string(lv.goal), now, 4.0);
+    };
+
+    // 过关之后的**收尾**：喊一声 → 记下这关过了 → 推进下一关 → 把下一关的题面念出来。
+    // 两处过关必须走同一套，不能各写一半：
+    //   · 循环里"当场改了数据按 R"那一帧（从没过变成过了）
+    //   · 开场就发现"你刚改完代码、重编译回来"（freshWin）
+    //
+    // 以前开场那条路只喊了一声就完了。而第 0 关**恰好最容易走这条路**（它的解法就是
+    // 改 C++ 重编译），于是全项目情绪最高的那一下反馈最薄：房间亮了，然后没有下文，
+    // 人不知道自己该干嘛 —— 这是实测被提出来的原话（"缺乏引导、鼓励和下一关的信息"）。
+    auto finishLevel = [&](const Level& lv, double now) {
+        announcePass(lv, now);
+        rt.goals = markLevelDone(rt.goals, rt.index);
+        if (rt.index + 1 < levelCount()) {
+            rt.index += 1;
+            // 推进之后马上重判一次：面板上的进度条、终端念的题面都指着 rt.status，
+            // 不重判的话会有一帧"标题是下一关、进度条还是上一关的 100%"。
+            rt.status = judge.evaluate(scene.world, levelAt(rt.index));
+            con.print("下面是下一关 —— 想重看哪一关的要求，敲 level（或走到终端按 E）。");
+            printLevelBriefing(con, rt);
+        } else {
+            con.print("而且这是最后一关 —— 你已经把整条管线亲手走通一遍了。");
+        }
     };
     if (rt.freshWin) {
-        announcePass(levelAt(rt.index), win.time());
+        finishLevel(levelAt(rt.index), win.time());
         wasPassed = true;  // 刚补喊过，别让循环的第一帧再喊一遍
         rt.freshWin = false;
     }
@@ -974,18 +1001,7 @@ int runWindow(const Args& args, Window& win, Scene& scene, Rasterizer& rz, Conso
         if (rt.status.passed() && !wasPassed) {
             // 过关只在"从没过变成过了"的那一帧喊一次（比如当场改了 content/ 按 R）。
             // 这也是唯一一处"当场看见因果"的奖励：刚敲下的那行数字，让房间亮了。
-            announcePass(lv, now);
-            rt.goals = markLevelDone(rt.goals, rt.index);
-            // 过关就自动进下一关，不用回终端"领任务"。奖励刚喊完，下一关的题目紧接着
-            // 念出来 —— 学生正处在"我懂了"的那口气上，这一下最接得住。
-            if (rt.index + 1 < levelCount()) {
-                rt.index += 1;
-                rt.status = judge.evaluate(scene.world, levelAt(rt.index));
-                con.print("这一关你过了。下面是下一关 —— 想重看哪一关的要求，敲 level 随时能查。");
-                printLevelBriefing(con, rt);
-            } else {
-                con.print("这一关你过了 —— 而且它是最后一关：整条管线你已经亲手走通一遍了。");
-            }
+            finishLevel(lv, now);
         }
         if (rt.status.passed()) rt.goals = markLevelDone(rt.goals, rt.index);
         wasPassed = rt.status.passed();
