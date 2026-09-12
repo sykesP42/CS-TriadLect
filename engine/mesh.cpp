@@ -146,4 +146,16 @@ Mesh makeCylinder(float radius, float height, int segments) {
     return m;
 }
 
+Bounds meshBounds(const Mesh& mesh) {
+    Bounds b;
+    if (mesh.vertices.empty()) return b;
+    b.min = mesh.vertices[0].position;
+    b.max = mesh.vertices[0].position;
+    for (const Vertex& v : mesh.vertices) {
+        b.min = minv(b.min, v.position);
+        b.max = maxv(b.max, v.position);
+    }
+    return b;
+}
+
 }  // namespace dlab

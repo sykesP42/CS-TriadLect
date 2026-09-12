@@ -18,4 +18,14 @@ Mesh makeSphere(float radius, int segments = 32, int rings = 16);
 // 圆柱：侧面 + 上下盖，中心在原点，轴向为 y
 Mesh makeCylinder(float radius, float height, int segments = 24);
 
+// 轴对齐包围盒（局部空间）。碰撞、交互射线、展台对齐都靠它。
+struct Bounds {
+    Vec3 min{0.0f, 0.0f, 0.0f};
+    Vec3 max{0.0f, 0.0f, 0.0f};
+    Vec3 center() const { return (min + max) * 0.5f; }
+    Vec3 size() const { return max - min; }
+};
+
+Bounds meshBounds(const Mesh& mesh);
+
 }  // namespace dlab

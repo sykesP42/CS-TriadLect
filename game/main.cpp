@@ -14,6 +14,8 @@
 #include "../core/raster.h"
 #include "../core/texture.h"
 #include "../engine/mesh.h"
+#include "../engine/world.h"
+#include "workshop.h"
 
 using namespace dlab;
 
@@ -120,132 +122,29 @@ Args parseArgs(int argc, char** argv) {
 // ---------------------------------------------------------------- 场景
 
 struct Scene {
-    Texture floorTex;
-    std::vector<Material> materials;
-    Light lights[2];
-    int lightCount = 0;
-
-    Mesh floorMesh;
-    Mesh wallMesh;
-    Mesh sphereMesh;
-    Mesh crateMesh;
-    Mesh columnMesh;
-    Mesh lampMesh;
-
-    Vec3 cameraPos{0.0f, 2.35f, 5.6f};
-    Vec3 cameraTarget{0.0f, 1.05f, 0.0f};
-    float fovY = radians(50.0f);
-
-    // 环境光强度（0 = 全黑房间）。第 0 关就是把它从 0 一点点加回来。
-    Vec3 ambient{0.42f, 0.44f, 0.50f};
-    Vec3 skyColor{0.46f, 0.56f, 0.78f};
-    Vec3 groundColor{0.24f, 0.20f, 0.17f};
-    // 灯的位置（也是自发光灯罩的位置）
-    Vec3 keyLightPos{3.1f, 4.1f, 2.3f};
-};
-
-// 材质槽位：用常量索引比数字好读
-enum MaterialSlot {
-    kFloor = 0,
-    kChrome,
-    kPlastic,
-    kClay,
-    kWall,
-    kCrate,
-    kColumn,
-    kLamp,
-    kMaterialCount
+    World world;
+    Workshop workshop;
+    Camera camera;
 };
 
 void buildScene(Scene& s) {
-    // 棋盘格贴图 —— 最容易看出"透视对不对、滤波对不对"的图案
-    s.floorTex = makeChecker(128, Vec3{0.055f, 0.062f, 0.075f}, Vec3{0.70f, 0.72f, 0.76f}, 4);
+    s.workshop = buildWorkshop(s.world);
+    s.camera.position = Vec3{0.0f, 1.62f, 4.5f};
+    s.camera.yaw = 0.0f;
+    s.camera.pitch = -0.06f;
+}
 
-    s.materials.resize(kMaterialCount);
-
-    s.materials[kFloor].albedo = Vec3{1.0f, 1.0f, 1.0f};
-    s.materials[kFloor].roughness = 0.30f;
-    s.materials[kFloor].albedoTexture = &s.floorTex;
-    s.materials[kFloor].uvScale = Vec2{8.0f, 8.0f};
-
-    s.materials[kChrome].albedo = Vec3{0.95f, 0.93f, 0.90f};
-    s.materials[kChrome].roughness = 0.06f;
-    s.materials[kChrome].metallic = 1.0f;
-
-    s.materials[kPlastic].albedo = Vec3{0.82f, 0.13f, 0.11f};
-    s.materials[kPlastic].roughness = 0.26f;
-
-    s.materials[kClay].albedo = Vec3{0.74f, 0.53f, 0.32f};
-    s.materials[kClay].roughness = 0.92f;
-
-    s.materials[kWall].albedo = Vec3{0.28f, 0.30f, 0.34f};
-    s.materials[kWall].roughness = 0.88f;
-
-    s.materials[kCrate].albedo = Vec3{0.52f, 0.40f, 0.24f};
-    s.materials[kCrate].roughness = 0.62f;
-
-    s.materials[kColumn].albedo = Vec3{0.60f, 0.61f, 0.64f};
-    s.materials[kColumn].roughness = 0.44f;
-
-    // 灯罩：自发光。它同时是画面里的光源和一块"亮起来的东西"
-    s.materials[kLamp].albedo = Vec3{0.0f, 0.0f, 0.0f};
-    s.materials[kLamp].emissive = Vec3{4.2f, 3.8f, 3.0f};
-    s.materials[kLamp].roughness = 0.5f;
-
-    // 主光：暖白，从右上前方打过来
-    s.lights[0].position = s.keyLightPos;
-    s.lights[0].color = Vec3{1.0f, 0.93f, 0.82f};
-    s.lights[0].intensity = 95.0f;
-    s.lights[0].radius = 0.35f;
-
-    // 补光：冷色，从左侧远处，用来把暗部从纯黑里拉回来一点
-    s.lights[1].position = Vec3{-4.2f, 2.8f, 1.4f};
-    s.lights[1].color = Vec3{0.45f, 0.62f, 1.0f};
-    s.lights[1].intensity = 42.0f;
-    s.lights[1].radius = 0.45f;
-    s.lightCount = 2;
-
-    s.floorMesh = makePlane(26.0f);
-    s.wallMesh = makeBox(Vec3{9.0f, 3.4f, 0.25f});
-    s.sphereMesh = makeSphere(0.75f, 40, 20);
-    s.crateMesh = makeBox(Vec3{0.6f, 0.6f, 0.6f});
-    s.columnMesh = makeCylinder(0.42f, 3.2f, 28);
-    s.lampMesh = makeBox(Vec3{0.22f, 0.22f, 0.22f});
+// 把"看向某个点"换算成偏航/俯仰（相机用欧拉角存，玩家输入天然就是这两个角）
+void lookAtPoint(Camera& cam, Vec3 target) {
+    const Vec3 d = normalize(target - cam.position);
+    cam.yaw = std::atan2(-d.x, -d.z);
+    cam.pitch = std::asin(clampf(d.y, -1.0f, 1.0f));
 }
 
 // 每帧把整场景重新提交一次（P0 不做场景图缓存，先把管线跑通）
 void renderFrame(Rasterizer& rz, const Scene& s, float timeSeconds) {
-    const int w = rz.framebuffer().width;
-    const int h = rz.framebuffer().height;
-    const Mat4 view = lookAt(s.cameraPos, s.cameraTarget, Vec3{0.0f, 1.0f, 0.0f});
-    const Mat4 proj = perspective(s.fovY, float(w) / float(h), 0.08f, 120.0f);
-
-    ShadeEnv env;
-    env.ambient = s.ambient;
-    env.skyColor = s.skyColor;
-    env.groundColor = s.groundColor;
-    env.lights = s.lights;
-    env.lightCount = s.lightCount;
-
-    rz.begin(view, proj, s.cameraPos, env);
-
-    rz.draw(s.floorMesh, Mat4{}, s.materials[kFloor]);
-    rz.draw(s.wallMesh, translation(Vec3{0.0f, 3.4f, -6.0f}), s.materials[kWall]);
-    rz.draw(s.columnMesh, translation(Vec3{3.5f, 1.6f, -1.4f}), s.materials[kColumn]);
-
-    // 三个球：只改 roughness / metallic，观感完全不同 —— 这就是材质参数的意义
-    rz.draw(s.sphereMesh, translation(Vec3{-2.15f, 0.75f, 0.0f}), s.materials[kChrome]);
-    rz.draw(s.sphereMesh, translation(Vec3{0.0f, 0.75f, 0.0f}), s.materials[kPlastic]);
-    rz.draw(s.sphereMesh, translation(Vec3{2.15f, 0.75f, 0.0f}), s.materials[kClay]);
-
-    // 木箱慢慢转 —— 用来确认动画与深度排序都正常
-    const Mat4 crate = translation(Vec3{-3.7f, 0.6f, 1.5f}) * rotationY(timeSeconds * 0.6f);
-    rz.draw(s.crateMesh, crate, s.materials[kCrate]);
-
-    // 灯泡本体
-    rz.draw(s.lampMesh, translation(s.keyLightPos), s.materials[kLamp]);
-
-    rz.flush();
+    (void)timeSeconds;
+    s.world.render(rz, s.camera);
 }
 
 // ---------------------------------------------------------------- HUD
@@ -591,10 +490,58 @@ int runPreview(const std::string& textIn, int scale) {
     return 0;
 }
 
+void testWorld() {
+    World w;
+    const Workshop ws = buildWorkshop(w);
+    (void)ws;
+
+    // 房间尺寸：地板是 12x12 的平面，y 恰好贴地
+    const Entity* floor = w.entity("地板");
+    check(floor != nullptr, "世界：找得到「地板」");
+    if (floor != nullptr) {
+        checkClose(floor->aabbMin.x, -6.0f, 1e-3f, "世界：地板包围盒 x 下界");
+        checkClose(floor->aabbMax.x, 6.0f, 1e-3f, "世界：地板包围盒 x 上界");
+        checkClose(floor->aabbMax.y, 0.0f, 1e-3f, "世界：地板贴地（y 上界 = 0）");
+    }
+
+    // 墙的内表面要正好落在 ±6 上，否则玩家会卡在墙里或走进虚空
+    const Entity* back = w.entity("后墙");
+    const Entity* front = w.entity("前墙");
+    check(back != nullptr && front != nullptr, "世界：找得到前后墙");
+    if (back != nullptr) checkClose(back->aabbMax.z, -6.0f, 1e-3f, "世界：后墙内表面 z = -6");
+    if (front != nullptr) checkClose(front->aabbMin.z, 6.0f, 1e-3f, "世界：前墙内表面 z = +6");
+
+    // 斜着摆的木箱：8 角点变换后的 AABB 一定要比没转时更大（否则就是漏算了旋转）
+    // 边长 0.8 的箱子绕 y 转 24°，AABB 的 x 方向尺寸应该 ≈ 0.8*(cos24+sin24) ≈ 1.06
+    const Entity* crate = w.entity("木箱");
+    check(crate != nullptr, "世界：找得到「木箱」");
+    if (crate != nullptr) {
+        const float sx = crate->aabbMax.x - crate->aabbMin.x;
+        checkClose(sx, 1.056f, 0.01f, "世界：斜摆放的木箱 AABB 尺寸（旋转被算进去了）");
+    }
+
+    // 碰撞查询：出生点要空、展台里要有东西、墙里要有东西
+    check(!w.overlapsSolid(Vec3{0.0f, 1.62f, 4.5f}, 0.3f), "碰撞：出生点没被堵住");
+    check(w.overlapsSolid(Vec3{3.6f, 0.5f, -3.0f}, 0.3f), "碰撞：展台A 挡住人");
+    check(w.overlapsSolid(Vec3{0.0f, 1.62f, 6.1f}, 0.3f), "碰撞：前墙挡住人");
+    check(!w.overlapsSolid(Vec3{0.0f, 1.62f, -4.0f}, 0.3f), "碰撞：桌子前方可以站人");
+
+    // 交互目标必须挂上命令，否则按 E 会没反应
+    for (int i = 0; i < 3; ++i) {
+        const Entity& orb = w.entities[size_t(ws.entOrbs[i])];
+        check(!orb.prompt.empty() && !orb.command.empty(), "世界：展台上的球可以交互");
+    }
+
+    // 材质按名字能找回来 —— content/materials.txt 就靠这个对上号
+    check(w.findMaterial("chrome") >= 0, "世界：材质表里有 chrome");
+    check(w.findMaterial("不存在的材质") < 0, "世界：找不到的材质返回 -1");
+}
+
 int runSelfTest() {
     testMath();
     testRasterizer();
     testFont();
+    testWorld();
     if (g_failures == 0) {
         std::printf("[selftest] %d 项检查全部通过\n", g_checks);
         return 0;
@@ -617,9 +564,9 @@ int main(int argc, char** argv) {
 
     Scene scene;
     buildScene(scene);
-    if (args.hasCam) scene.cameraPos = args.cam;
-    if (args.hasLook) scene.cameraTarget = args.look;
-    if (args.fovDeg > 0.0f) scene.fovY = radians(args.fovDeg);
+    if (args.hasCam) scene.camera.position = args.cam;
+    if (args.hasLook) lookAtPoint(scene.camera, args.look);
+    if (args.fovDeg > 0.0f) scene.camera.fovY = radians(args.fovDeg);
 
     Rasterizer rz(args.threads);
     rz.resize(args.width, args.height);

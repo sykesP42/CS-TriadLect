@@ -1,0 +1,82 @@
+// 世界 = 网格库 + 材质表 + 实体表 + 光照 + 环境。
+//
+// 所有东西都按"下标"互相引用（实体 → 网格下标 / 材质下标），
+// 好处有两个：热重载材质只要改数组里的值；关卡换主题不用重新加载任何文件。
+#pragma once
+
+#include <deque>
+#include <string>
+#include <vector>
+
+#include "../core/mat.h"
+#include "../core/material.h"
+#include "../core/raster.h"
+#include "../core/texture.h"
+#include "../engine/entity.h"
+#include "../engine/mesh.h"
+
+namespace dlab {
+
+// 第一人称相机：位置 + 偏航/俯仰。用欧拉角而不是矩阵，是因为玩家输入天然就是这两个角度。
+struct Camera {
+    Vec3 position{0.0f, 1.62f, 4.5f};
+    float yaw = 0.0f;     // 弧度，0 = 朝 -z 看
+    float pitch = 0.0f;   // 抬头为正
+    float fovY = radians(62.0f);
+
+    Vec3 forward() const {
+        const float cp = std::cos(pitch);
+        return Vec3{-std::sin(yaw) * cp, std::sin(pitch), -std::cos(yaw) * cp};
+    }
+    Vec3 right() const { return Vec3{std::cos(yaw), 0.0f, -std::sin(yaw)}; }
+    Vec3 up() const { return cross(right(), forward()); }
+    Mat4 view() const { return lookAt(position, position + forward(), Vec3{0.0f, 1.0f, 0.0f}); }
+};
+
+class World {
+public:
+    static constexpr int kMaxLights = 8;
+
+    std::vector<Mesh> meshes;
+    std::vector<std::string> meshNames;
+    // 纹理用 deque 而不是 vector：材质里存的是 Texture*，deque 在 push_back 时
+    // 不会搬动已有元素，指针永远有效（vector 扩容会把它们全变成野指针）。
+    std::deque<Texture> textures;
+    std::vector<Material> materials;
+    std::vector<std::string> materialNames;
+    std::vector<Entity> entities;
+
+    Light lights[kMaxLights];
+    int lightCount = 0;
+
+    // 环境：ambient 是"整个世界的底光"，第 0 关就是从 0 开始把它加回来
+    Vec3 ambient{0.0f, 0.0f, 0.0f};
+    Vec3 skyColor{0.46f, 0.56f, 0.78f};
+    Vec3 groundColor{0.22f, 0.18f, 0.15f};
+
+    int addMesh(const std::string& name, Mesh mesh);
+    int addMaterial(const std::string& name, const Material& mat);
+    int addEntity(Entity e);
+    // 加完纹理再建材质，把返回的引用取地址存进 Material::albedoTexture
+    Texture& addTexture(Texture tex);
+
+    int findMesh(const std::string& name) const;
+    int findMaterial(const std::string& name) const;
+    int findEntity(const std::string& name) const;
+
+    Entity* entity(const std::string& name);
+    const Entity* entity(const std::string& name) const;
+
+    // 按网格包围盒 + 实体变换，重算所有世界空间 AABB
+    void refreshBounds();
+
+    void fillEnv(ShadeEnv& env, const Vec3& cameraPos) const;
+
+    // 整个场景画一帧（不 clear，也不做色调映射 —— 那是调用方的事）
+    void render(Rasterizer& rz, const Camera& cam) const;
+
+    // 相机能不能站在这里（用于出生点校验和关卡提示）
+    bool overlapsSolid(const Vec3& point, float radius) const;
+};
+
+}  // namespace dlab
